@@ -390,20 +390,9 @@ func (p *Pipeline) Explain(ctx context.Context, acct store.Account, threadID str
 	return ex, nil
 }
 
-// ScoreThread scores one thread from its stored judgment (nil = unjudged).
+// ScoreThread scores one thread from its stored judgment (nil = unjudged), without impact data.
 func ScoreThread(w scoring.Weights, t store.Thread, j *store.Judgment, answers map[string]judge.Answer, login string, now time.Time) scoring.Result {
-	in := scoring.Inputs{Kind: t.ActivityKind, Relations: t.RelationTags, UpdatedAt: t.UpdatedAt}
-	in.IsAuthor = t.ItemAuthor != "" && strings.EqualFold(t.ItemAuthor, login)
-	for _, r := range t.RelationTags {
-		if r == "author" {
-			in.IsAuthor = true
-		}
-	}
-	if j != nil && j.ThreadVersion == t.Version() && answers != nil {
-		in.Answers = answers
-		in.Calibrated = j.Calibrated
-	}
-	return scoring.Score(w, in, now)
+	return scoreThread(w, t, j, answers, nil, login, now)
 }
 
 // Scored pairs a thread with its score; used by the inbox listing.
@@ -428,6 +417,10 @@ func (p *Pipeline) ScoreThreads(ctx context.Context, threads []store.Thread) ([]
 			logins[a.ID] = a.Login
 		}
 	}
+	analyses, err := p.deps.DB.AnalysesByKey(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	out := make([]Scored, 0, len(threads))
 	for _, t := range threads {
@@ -437,9 +430,35 @@ func (p *Pipeline) ScoreThreads(ctx context.Context, threads []store.Thread) ([]
 			jp = &j
 			_ = json.Unmarshal(j.AnswersJSON, &answers)
 		}
-		out = append(out, Scored{Thread: t, Score: ScoreThread(w, t, jp, answers, logins[t.AccountID], now)})
+		var ap *store.Analysis
+		if t.SubjectNumber != 0 && (t.SubjectType == "PullRequest" || t.SubjectType == "MergeRequest") {
+			if a, ok := analyses[store.AnalysisKey(t.AccountID, t.Repo, t.SubjectNumber)]; ok && a.ImpactLevel >= 0 {
+				ap = &a
+			}
+		}
+		out = append(out, Scored{Thread: t, Score: scoreThread(w, t, jp, answers, ap, logins[t.AccountID], now)})
 	}
 	return out, nil
+}
+
+// scoreThread is ScoreThread with an optional impact analysis.
+func scoreThread(w scoring.Weights, t store.Thread, j *store.Judgment, answers map[string]judge.Answer, a *store.Analysis, login string, now time.Time) scoring.Result {
+	in := scoring.Inputs{Kind: t.ActivityKind, Relations: t.RelationTags, UpdatedAt: t.UpdatedAt, ImpactLevel: -1}
+	in.IsAuthor = t.ItemAuthor != "" && strings.EqualFold(t.ItemAuthor, login)
+	for _, r := range t.RelationTags {
+		if r == "author" {
+			in.IsAuthor = true
+		}
+	}
+	if j != nil && j.ThreadVersion == t.Version() && answers != nil {
+		in.Answers = answers
+		in.Calibrated = j.Calibrated
+	}
+	if a != nil {
+		in.ImpactLevel = a.ImpactLevel
+		in.ImpactMerged = a.State == "merged"
+	}
+	return scoring.Score(w, in, now)
 }
 
 // SecretsBackendKeyHint documents where the key lives, for Diagnostics.

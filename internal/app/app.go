@@ -29,12 +29,14 @@ type App struct {
 	Logger  *slog.Logger
 	DBPath  string
 	LogPath string
+	Notify  func(n pipeline.Notification) // desktop notification sink (nil in the CLI)
 
 	cancel context.CancelFunc
 }
 
-// Open initialises everything. emit forwards pipeline events to the UI.
-func Open(emit func(name string, data any)) (*App, error) {
+// Open initialises everything. emit forwards pipeline events to the UI; notify
+// (optional) delivers desktop notifications.
+func Open(emit func(name string, data any), notify func(n pipeline.Notification)) (*App, error) {
 	dbPath := os.Getenv("GHINBOX_DB")
 	if dbPath == "" {
 		var err error
@@ -58,7 +60,7 @@ func Open(emit func(name string, data any)) (*App, error) {
 	}
 	logger := slog.New(slog.NewTextHandler(logSink, &slog.HandlerOptions{Level: level}))
 
-	a := &App{DB: db, Secrets: secrets.Open(), Logger: logger, DBPath: dbPath, LogPath: logPath}
+	a := &App{DB: db, Secrets: secrets.Open(), Logger: logger, DBPath: dbPath, LogPath: logPath, Notify: notify}
 	a.MCP, a.MCPErr = mcpbin.Locate(mcpbin.Options{OverridePath: os.Getenv("GHINBOX_MCP_PATH")})
 	if a.MCPErr != nil {
 		logger.Warn("github-mcp-server not found", "err", a.MCPErr)
@@ -70,6 +72,7 @@ func Open(emit func(name string, data any)) (*App, error) {
 		Logger:    logger,
 		Emit:      emit,
 		ServerLog: logSink,
+		Notify:    notify,
 	})
 	a.Pipe.SetGitLabFactory(gitlabsrc.Factory())
 	return a, nil

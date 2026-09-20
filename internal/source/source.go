@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"ghinbox/internal/profiles"
 	"ghinbox/internal/store"
 )
 
@@ -87,6 +88,56 @@ func TrimText(s string, max int) string {
 	}
 	return s[:cut] + "…"
 }
+
+// ChangeSet is a pull/merge request with its changed files (PLAN.md §4.4).
+type ChangeSet struct {
+	Forge      string                `json:"forge"`
+	Repo       string                `json:"repo"`
+	Number     int                   `json:"number"`
+	Kind       string                `json:"kind"` // pr | mr
+	Title      string                `json:"title"`
+	Body       string                `json:"body"`
+	Labels     []string              `json:"labels"`
+	Base       string                `json:"base"`
+	State      string                `json:"state"` // open | merged | closed
+	Draft      bool                  `json:"draft"`
+	Author     string                `json:"author"`
+	HeadSHA    string                `json:"headSha"`
+	HTMLURL    string                `json:"htmlUrl"`
+	CreatedAt  time.Time             `json:"createdAt"`
+	UpdatedAt  time.Time             `json:"updatedAt"`
+	MergedAt   *time.Time            `json:"mergedAt"`
+	Files      []profiles.FileChange `json:"files"`
+	FilesTotal int                   `json:"filesTotal"`
+	Additions  int                   `json:"additions"`
+	Deletions  int                   `json:"deletions"`
+	Truncated  bool                  `json:"truncated"` // file list or patches were capped
+}
+
+// Changer fetches a pull/merge request's metadata and changed files.
+type Changer interface {
+	Changes(ctx context.Context, repo string, number int) (ChangeSet, error)
+}
+
+// ChangeRef points at a pull/merge request without its files.
+type ChangeRef struct {
+	Repo      string     `json:"repo"`
+	Number    int        `json:"number"`
+	Title     string     `json:"title"`
+	HTMLURL   string     `json:"htmlUrl"`
+	Author    string     `json:"author"`
+	MergedAt  *time.Time `json:"mergedAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
+}
+
+// LandedLister lists recently merged pull/merge requests in a repo, so landed
+// changes in profile repos are tracked even without a notification.
+type LandedLister interface {
+	RecentlyMerged(ctx context.Context, repo string, since time.Time, limit int) ([]ChangeRef, error)
+}
+
+// MaxChangeFiles caps how many changed files a Changer returns.
+const MaxChangeFiles = 300
 
 // ScopeReporter is implemented by sources that can learn the token's scopes.
 type ScopeReporter interface {

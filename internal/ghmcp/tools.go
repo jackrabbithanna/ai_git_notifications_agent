@@ -225,6 +225,19 @@ func (c *Client) IssueRead(ctx context.Context, owner, repo string, number int, 
 	return json.RawMessage(text), nil
 }
 
+// ListPullRequests calls list_pull_requests and returns the raw JSON list.
+func (c *Client) ListPullRequests(ctx context.Context, owner, repo, state, sort, direction string, perPage int, fields []string) (json.RawMessage, error) {
+	args := map[string]any{"owner": owner, "repo": repo, "state": state, "sort": sort, "direction": direction, "perPage": perPage}
+	if len(fields) > 0 {
+		args["fields"] = fields
+	}
+	text, err := c.CallRaw(ctx, ToolListPullRequests, args)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(text), nil
+}
+
 // IssueReadPage is IssueRead with pagination arguments.
 func (c *Client) IssueReadPage(ctx context.Context, owner, repo string, number int, method string, page, perPage int) (json.RawMessage, error) {
 	text, err := c.CallRaw(ctx, ToolIssueRead, map[string]any{"owner": owner, "repo": repo, "issue_number": number, "method": method, "page": page, "perPage": perPage})

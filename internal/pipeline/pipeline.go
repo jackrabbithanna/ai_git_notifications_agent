@@ -17,6 +17,7 @@ import (
 	"ghinbox/internal/filter"
 	"ghinbox/internal/ghmcp"
 	"ghinbox/internal/judge"
+	"ghinbox/internal/llm"
 	"ghinbox/internal/secrets"
 	"ghinbox/internal/source"
 	githubsrc "ghinbox/internal/source/github"
@@ -31,6 +32,7 @@ type Deps struct {
 	Logger    *slog.Logger
 	Emit      func(name string, data any) // UI event sink; may be nil
 	ServerLog io.Writer                   // github-mcp-server stderr sink; may be nil
+	Notify    func(n Notification)        // desktop notification sink; nil disables notifications
 }
 
 // Pipeline owns one MCP client per account and runs syncs.
@@ -47,6 +49,8 @@ type Pipeline struct {
 
 	// judgeOverride replaces the configured provider (tests, dry runs).
 	judgeOverride judge.Judge
+	// generatorOverride replaces the note generator (tests).
+	generatorOverride llm.Generator
 }
 
 // GitLabFactory builds a GitLab Source for an account (registered by main/CLI).
@@ -611,6 +615,8 @@ func (p *Pipeline) RunScheduler(ctx context.Context, interval time.Duration) {
 				p.deps.Logger.Warn("scheduled sync", "err", err)
 			}
 			p.judgeAfterSync(ctx)
+			p.analyzeAfterJudge(ctx)
+			p.proseAfterAnalyze(ctx)
 		}
 	}
 }
@@ -638,5 +644,31 @@ func (p *Pipeline) SyncAndJudge(ctx context.Context, full bool) ([]SyncReport, [
 		return syncs, nil, err
 	}
 	judges, _ := p.JudgeAll(ctx)
+	p.analyzeAfterJudge(ctx)
+	p.proseAfterAnalyze(ctx)
 	return syncs, judges, nil
+}
+
+// analyzeAfterJudge runs the impact step for every account when enabled.
+func (p *Pipeline) analyzeAfterJudge(ctx context.Context) {
+	settings, err := p.ImpactSettings(ctx)
+	if err != nil || !settings.AutoAnalyze {
+		return
+	}
+	accts, err := p.deps.DB.ListAccounts(ctx)
+	if err != nil {
+		return
+	}
+	for _, a := range accts {
+		rep, err := p.AnalyzePending(ctx, a, 0)
+		if err != nil && ctx.Err() == nil && !errors.Is(err, ErrJudgeOff) {
+			p.deps.Logger.Warn("impact analysis", "account", a.Login, "err", err)
+		}
+		for _, e := range rep.Errors {
+			p.deps.Logger.Warn("impact analysis", "account", a.Login, "detail", e)
+		}
+		if errors.Is(err, ErrJudgeOff) || errors.Is(err, judge.ErrUnauthorized) {
+			break
+		}
+	}
 }

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { AccountsService, DiagnosticsService, JudgeService, WatchesService } from "../../bindings/ghinbox/internal/services";
+import { AccountsService, DiagnosticsService, ImpactService, JudgeService, ProseService, WatchesService } from "../../bindings/ghinbox/internal/services";
+import type { ProseSettings } from "../../bindings/ghinbox/internal/pipeline";
+import type { ImpactSettings } from "../../bindings/ghinbox/internal/pipeline";
 import type { JudgeStatus } from "../../bindings/ghinbox/internal/services";
 import type { JudgeSettings } from "../../bindings/ghinbox/internal/pipeline";
 import type { Weights } from "../../bindings/ghinbox/internal/scoring";
@@ -161,6 +163,8 @@ export default function Settings({ onAccountsChanged }: { onAccountsChanged: () 
 
       <JudgeSection onError={setError} />
       <WeightsSection onError={setError} />
+      <ImpactSection onError={setError} />
+      <ProseSection onError={setError} />
 
       {rules && (
         <Card
@@ -304,6 +308,138 @@ function JudgeSection({ onError }: { onError: (e: string) => void }) {
         <label className="block text-xs text-neutral-600 dark:text-neutral-400">
           Concurrency
           <input type="number" className={"mt-1 w-full " + input} value={s.concurrency} onChange={(e) => setS({ ...s, concurrency: Number(e.target.value) })} />
+        </label>
+      </div>
+      {saved && <p className="mt-2 text-xs text-green-700 dark:text-green-300">{saved}</p>}
+    </Card>
+  );
+}
+
+function ProseSection({ onError }: { onError: (e: string) => void }) {
+  const [s, setS] = useState<ProseSettings | null>(null);
+  const [saved, setSaved] = useState("");
+  useEffect(() => {
+    ProseService.Settings().then(setS).catch((e) => onError(errMsg(e)));
+  }, [onError]);
+  if (!s) return null;
+  const input = "rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900";
+  const save = () =>
+    ProseService.SaveSettings(s)
+      .then(() => setSaved("Saved."))
+      .catch((e) => onError(errMsg(e)));
+  const testNotify = () =>
+    ProseService.TestNotification()
+      .then(() => setSaved("Test notification sent."))
+      .catch((e) => onError(errMsg(e)));
+  return (
+    <Card
+      title="Summaries, digest & notifications"
+      actions={
+        <>
+          <Button onClick={testNotify}>Test notification</Button>
+          <Button kind="primary" onClick={save}>
+            Save prose settings
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-3 text-sm md:grid-cols-3">
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Ollama model for summaries (blank = note/judge model)
+          <input className={"mt-1 w-full " + input} value={s.summaryModel} onChange={(e) => setS({ ...s, summaryModel: e.target.value })} placeholder="e.g. qwen3.5:9b" />
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Auto-summarise top N threads per run (0 = off)
+          <input type="number" className={"mt-1 w-full " + input} value={s.topN} onChange={(e) => setS({ ...s, topN: Number(e.target.value) })} />
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          …at most every (minutes)
+          <input type="number" className={"mt-1 w-full " + input} value={s.summarizeEveryMin} onChange={(e) => setS({ ...s, summarizeEveryMin: Number(e.target.value) })} />
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Digest model (blank = summary model)
+          <input className={"mt-1 w-full " + input} value={s.digestModel} onChange={(e) => setS({ ...s, digestModel: e.target.value })} />
+        </label>
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={s.autoDigest} onChange={(e) => setS({ ...s, autoDigest: e.target.checked })} /> Generate a digest automatically every
+          <input type="number" className={"w-16 " + input} value={s.digestEveryH} onChange={(e) => setS({ ...s, digestEveryH: Number(e.target.value) })} /> h
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Threads fed to the digest
+          <input type="number" className={"mt-1 w-full " + input} value={s.digestMaxThreads} onChange={(e) => setS({ ...s, digestMaxThreads: Number(e.target.value) })} />
+        </label>
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={s.notifyNeedsMe} onChange={(e) => setS({ ...s, notifyNeedsMe: e.target.checked })} /> Desktop notification when a thread enters "Needs me"
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Notify for impact analyses at level
+          <select className={"mt-1 w-full " + input} value={s.notifyImpactMinLevel} onChange={(e) => setS({ ...s, notifyImpactMinLevel: Number(e.target.value) })}>
+            <option value={2}>likely and above</option>
+            <option value={3}>certain only</option>
+            <option value={4}>never</option>
+          </select>
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Max notifications per run
+          <input type="number" className={"mt-1 w-full " + input} value={s.notifyMaxPerRun} onChange={(e) => setS({ ...s, notifyMaxPerRun: Number(e.target.value) })} />
+        </label>
+      </div>
+      {saved && <p className="mt-2 text-xs text-green-700 dark:text-green-300">{saved}</p>}
+    </Card>
+  );
+}
+
+function ImpactSection({ onError }: { onError: (e: string) => void }) {
+  const [s, setS] = useState<ImpactSettings | null>(null);
+  const [saved, setSaved] = useState("");
+  useEffect(() => {
+    ImpactService.Settings().then(setS).catch((e) => onError(errMsg(e)));
+  }, [onError]);
+  if (!s) return null;
+  const input = "rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900";
+  const save = () =>
+    ImpactService.SaveSettings(s)
+      .then(() => setSaved("Saved."))
+      .catch((e) => onError(errMsg(e)));
+  return (
+    <Card
+      title="PR impact analysis"
+      actions={
+        <Button kind="primary" onClick={save}>
+          Save impact settings
+        </Button>
+      }
+    >
+      <div className="grid gap-3 text-sm md:grid-cols-3">
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={s.autoAnalyze} onChange={(e) => setS({ ...s, autoAnalyze: e.target.checked })} /> Analyse PR threads in profile repos automatically after each sync
+        </label>
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={s.scanLanded} onChange={(e) => setS({ ...s, scanLanded: e.target.checked })} /> Scan profile repos for recently merged PRs
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Max analyses per run
+          <input type="number" className={"mt-1 w-full " + input} value={s.maxPerRun} onChange={(e) => setS({ ...s, maxPerRun: Number(e.target.value) })} />
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Landed scan every (minutes)
+          <input type="number" className={"mt-1 w-full " + input} value={s.scanLandedEveryMin} onChange={(e) => setS({ ...s, scanLandedEveryMin: Number(e.target.value) })} />
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Landed look-back (days)
+          <input type="number" className={"mt-1 w-full " + input} value={s.landedLookbackDays} onChange={(e) => setS({ ...s, landedLookbackDays: Number(e.target.value) })} />
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Ollama model for impact notes (blank = judge model)
+          <input className={"mt-1 w-full " + input} value={s.noteModel} onChange={(e) => setS({ ...s, noteModel: e.target.value })} placeholder="e.g. qwen3.5:9b" />
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Write notes automatically at level ≥
+          <select className={"mt-1 w-full " + input} value={s.autoNoteMinLevel} onChange={(e) => setS({ ...s, autoNoteMinLevel: Number(e.target.value) })}>
+            <option value={2}>likely</option>
+            <option value={3}>certain</option>
+            <option value={4}>never (on demand only)</option>
+          </select>
         </label>
       </div>
       {saved && <p className="mt-2 text-xs text-green-700 dark:text-green-300">{saved}</p>}

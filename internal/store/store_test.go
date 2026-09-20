@@ -298,3 +298,131 @@ func TestJudgmentsAndEnrichment(t *testing.T) {
 		t.Fatalf("stale judgment must re-candidate: %d", len(cands))
 	}
 }
+
+func TestProfilesAndAnalyses(t *testing.T) {
+	db := openTest(t)
+	ctx := context.Background()
+	a, _ := db.InsertAccount(ctx, ForgeGitHub, "me", "")
+	if err := db.PutUserProfile(ctx, "mine", "id: mine\nlayers: []\n", true); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := db.ListUserProfiles(ctx)
+	if len(ps) != 1 || ps[0].ID != "mine" || !ps[0].Enabled {
+		t.Fatalf("profiles: %+v", ps)
+	}
+	if err := db.SetProfileEnabled(ctx, "mine", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetProfileEnabled(ctx, "civicrm", false); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ = db.ListUserProfiles(ctx)
+	flags, _ := db.ProfileFlags(ctx)
+	if ps[0].Enabled || flags["civicrm"] != false {
+		t.Fatalf("enable flags: %+v %v", ps, flags)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	an := Analysis{AccountID: a.ID, Forge: ForgeGitHub, Repo: "civicrm/civicrm-core", Number: 7, Kind: "pr", HeadSHA: "abc", ProfileID: "civicrm", Title: "T", State: "open", UpdatedAt: &now,
+		ReportJSON: json.RawMessage(`{"layers":[]}`), QuestionsVersion: "impact.v1", Provider: "fake", AnswersJSON: json.RawMessage(`{}`), ImpactLevel: 2, ImpactScore: 2.2, ChangeKind: "api_change", AnalysedAt: &now}
+	if err := db.PutAnalysis(ctx, an); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetAnalysis(ctx, a.ID, "civicrm/civicrm-core", 7)
+	if err != nil || got.ImpactLevel != 2 || got.HeadSHA != "abc" || got.NoteJSON != nil || got.AnalysedAt == nil {
+		t.Fatalf("get: %+v %v", got, err)
+	}
+	if err := db.SetAnalysisNote(ctx, a.ID, "civicrm/civicrm-core", 7, json.RawMessage(`{"what_changed":"x"}`), "qwen"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = db.GetAnalysis(ctx, a.ID, "civicrm/civicrm-core", 7)
+	if string(got.NoteJSON) != `{"what_changed":"x"}` || got.NoteModel != "qwen" {
+		t.Fatalf("note: %s %s", got.NoteJSON, got.NoteModel)
+	}
+	an.Number = 8
+	an.State = "merged"
+	an.MergedAt = &now
+	an.ImpactLevel = 3
+	_ = db.PutAnalysis(ctx, an)
+	an.Number = 9
+	an.State = "open"
+	an.ImpactLevel = -1
+	_ = db.PutAnalysis(ctx, an)
+	open, _ := db.ListAnalyses(ctx, AnalysisQuery{MinLevel: 0})
+	landed, _ := db.ListAnalyses(ctx, AnalysisQuery{MinLevel: 2, Landed: true})
+	all, _ := db.ListAnalyses(ctx, AnalysisQuery{MinLevel: -1, Any: true})
+	if len(open) != 1 || open[0].Number != 7 || len(landed) != 1 || landed[0].Number != 8 || len(all) != 3 {
+		t.Fatalf("lists: open=%d landed=%d all=%d", len(open), len(landed), len(all))
+	}
+	byKey, _ := db.AnalysesByKey(ctx, 0)
+	if byKey[AnalysisKey(a.ID, "civicrm/civicrm-core", 8)].ImpactLevel != 3 {
+		t.Fatalf("by key: %v", byKey)
+	}
+	// Enrichment now records the item creation time.
+	th := Thread{AccountID: a.ID, ThreadID: "t", Repo: "o/r", SubjectType: "PullRequest", Title: "x", Reason: "subscribed", Unread: true, UpdatedAt: now, ActivityKind: "new_pr", FilterVerdict: "keep"}
+	_ = db.UpsertThread(ctx, th)
+	created := now.Add(-10 * time.Minute)
+	_ = db.SetThreadEnrichment(ctx, a.ID, "t", Enrichment{ItemCreatedAt: &created, EnrichedVersion: "v"})
+	got2, _ := db.GetThread(ctx, a.ID, "t")
+	if !got2.IsBrandNew() {
+		t.Fatalf("brand new: %+v", got2.Enrichment)
+	}
+	old := now.Add(-48 * time.Hour)
+	_ = db.SetThreadEnrichment(ctx, a.ID, "t", Enrichment{ItemCreatedAt: &old, EnrichedVersion: "v"})
+	got2, _ = db.GetThread(ctx, a.ID, "t")
+	if got2.IsBrandNew() {
+		t.Fatal("old item with new activity is a push, not brand new")
+	}
+	st, _ := db.GetSyncState(ctx, a.ID)
+	st.LastLandedScan = &now
+	_ = db.PutSyncState(ctx, st)
+	st, _ = db.GetSyncState(ctx, a.ID)
+	if st.LastLandedScan == nil {
+		t.Fatal("landed scan time not stored")
+	}
+}
+
+func TestProseTables(t *testing.T) {
+	db := openTest(t)
+	ctx := context.Background()
+	a, _ := db.InsertAccount(ctx, ForgeGitHub, "me", "")
+	if err := db.PutSummary(ctx, Summary{AccountID: a.ID, ThreadID: "t", ThreadVersion: "v1", Model: "qwen", ContentJSON: json.RawMessage(`{"summary":"s"}`), UsageJSON: json.RawMessage(`{"inputTokens":5,"outputTokens":2}`), LatencyMs: 900}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutSummary(ctx, Summary{AccountID: a.ID, ThreadID: "t", ThreadVersion: "v2", Model: "qwen", ContentJSON: json.RawMessage(`{"summary":"s2"}`), LatencyMs: 100}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := db.GetSummary(ctx, a.ID, "t")
+	if err != nil || s.ThreadVersion != "v2" || string(s.ContentJSON) != `{"summary":"s2"}` {
+		t.Fatalf("summary: %+v %v", s, err)
+	}
+	if m, _ := db.SummariesByKey(ctx, 0); len(m) != 1 {
+		t.Fatalf("summaries by key: %v", m)
+	}
+	now := time.Now()
+	id, err := db.PutDigest(ctx, Digest{PeriodStart: now.Add(-24 * time.Hour), PeriodEnd: now, Model: "qwen", ContentJSON: json.RawMessage(`{"headline":"h"}`), ThreadCount: 7, LatencyMs: 5000})
+	if err != nil || id == 0 {
+		t.Fatalf("digest: %d %v", id, err)
+	}
+	ds, _ := db.ListDigests(ctx, 5)
+	if len(ds) != 1 || ds[0].ThreadCount != 7 || ds[0].PeriodEnd.IsZero() {
+		t.Fatalf("digests: %+v", ds)
+	}
+	if ok, _ := db.MarkNotified(ctx, "thread:1:t:v2"); !ok {
+		t.Fatal("first notification must be new")
+	}
+	if ok, _ := db.MarkNotified(ctx, "thread:1:t:v2"); ok {
+		t.Fatal("second notification must be a duplicate")
+	}
+	_ = db.PutJudgment(ctx, Judgment{AccountID: a.ID, ThreadID: "t", ThreadVersion: "v2", QuestionsVersion: "triage.v1", Provider: "jev", Model: "jev-1", AnswersJSON: json.RawMessage(`{}`), UsageJSON: json.RawMessage(`{"inputTokens":100,"outputTokens":10}`), LatencyMs: 600})
+	rows, err := db.UsageStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]UsageRow{}
+	for _, r := range rows {
+		byKey[r.Source+"/"+r.Provider] = r
+	}
+	if byKey["judgments/jev"].InputTokens != 100 || byKey["summaries/ollama"].Count != 1 || byKey["digests/ollama"].AvgLatencyMs != 5000 {
+		t.Fatalf("usage: %+v", rows)
+	}
+}

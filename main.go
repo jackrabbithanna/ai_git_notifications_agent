@@ -13,6 +13,7 @@ import (
 	"ghinbox/internal/services"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 )
 
 // The production frontend build in frontend/dist is embedded into the binary.
@@ -28,9 +29,16 @@ const syncInterval = 3 * time.Minute
 
 func main() {
 	var wails *application.App
+	notifier := notifications.New()
+	seq := 0
 	core, err := app.Open(func(name string, data any) {
 		if wails != nil {
 			wails.Event.Emit(name, data)
+		}
+	}, func(n pipeline.Notification) {
+		seq++
+		if err := notifier.SendNotification(notifications.NotificationOptions{ID: fmt.Sprintf("ghinbox-%d-%d", time.Now().Unix(), seq), Title: n.Title, Body: n.Body, Data: map[string]any{"url": n.URL}}); err != nil {
+			log.Printf("notification: %v", err)
 		}
 	})
 	if err != nil {
@@ -48,6 +56,10 @@ func main() {
 			application.NewService(&services.DiagnosticsService{App: core}),
 			application.NewService(&services.WatchesService{App: core}),
 			application.NewService(&services.JudgeService{App: core}),
+			application.NewService(&services.ImpactService{App: core}),
+			application.NewService(&services.ProfilesService{App: core}),
+			application.NewService(&services.ProseService{App: core}),
+			application.NewService(notifier),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),

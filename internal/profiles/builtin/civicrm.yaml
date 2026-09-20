@@ -1,0 +1,61 @@
+# Built-in impact profile: CiviCRM core and the repos an extension/integration
+# developer depends on. Copy and edit in Profiles to adapt.
+id: civicrm
+name: CiviCRM
+repos:
+  - civicrm/civicrm-core
+  - civicrm/civicrm-packages
+  - civicrm/civicrm-drupal-8
+  - civicrm/civicrm-drupal
+  - civicrm/civicrm-wordpress
+  - civicrm/civicrm-backdrop
+  - civicrm/civicrm-joomla
+  - civicrm/civicrm-buildkit
+downstream_description: >
+  I develop CiviCRM extensions and CMS integrations that use APIv4, BAO/DAO
+  entities and schema, core hooks and services, QuickForm/Smarty forms,
+  Angular/Afform and SearchKit UI, and the Drupal/WordPress integration
+  modules. Flag changes that alter signatures, entity fields, hooks, schema,
+  settings, or UI extension points, and packaging changes that affect builds.
+layers:
+  - id: data_api
+    label: Data & API
+    weight: 1.0
+    paths: ["Civi/Api4/**", "CRM/**/BAO/**", "CRM/**/DAO/**", "xml/schema/**", "schema/**", "sql/**", "mixin/**", "api/v3/**"]
+  - id: hooks_core
+    label: Hooks & core services
+    weight: 1.0
+    paths: ["CRM/Utils/Hook.php", "CRM/Utils/Hook/**", "Civi/Core/**", "Civi/**/Event/**", "settings/**", "Civi/Api4/Service/**", "CRM/Core/**"]
+  - id: ui
+    label: UI & forms
+    weight: 0.8
+    paths: ["CRM/**/Form/**", "CRM/**/Page/**", "templates/**", "ang/**", "ext/afform/**", "ext/search_kit/**", "ext/civigrant/**", "ext/**/ang/**"]
+  - id: extensions
+    label: Core extensions
+    weight: 0.6
+    paths: ["ext/**"]
+  - id: frontend
+    label: JS & CSS
+    weight: 0.3
+    paths: ["js/**", "css/**", "**/*.js", "**/*.css"]
+  - id: packaging
+    label: Packaging & build
+    weight: 0.4
+    paths: ["composer.json", "composer.lock", "packages/**", "distmaker/**", "tools/**", ".github/**", "bin/**", "Makefile", "*.xml"]
+ignore_paths: ["tests/**", "**/tests/**", "**/*.md", "l10n/**", "release-notes/**", "**/*.po", "**/*.pot"]
+signals: ["BREAKING", "deprecat", "remove", "rename", "schema", "upgrade", "hook_civicrm", "APIv4", "signature", "migration", "entity", "getFields", "permission"]
+surface_patterns:
+  - id: php_public_sig
+    pattern: '^[+-]\s*(public|protected)\s+(static\s+)?function\s+\w+\s*\('
+  - id: hook_def
+    pattern: '^[+-].*(function\s+\w*hook_civicrm_\w+|public static function \w+\(\s*&?\$)'
+  - id: api4_action_or_field
+    pattern: '^[+-]\s*(public function (getFields|fields|_run)|class \w+ extends (Basic|Abstract)\w*Action|\$this->addField)'
+  - id: schema_xml
+    pattern: '^[+-]\s*<(field|table|name|type|index|required|default|foreignKey|entity)>'
+  - id: entity_type_php
+    pattern: "^[+-]\\s*'(name|type|required|default|entity_reference|sql_type)'\\s*=>"
+  - id: setting_def
+    pattern: '^[+-]\s*\$settings\[|^[+-]\s*return\s*\[\s*$|^[+-]\s*\x27group_name\x27\s*=>'
+  - id: deprecation
+    pattern: '^[+-].*(@deprecated|CRM_Core_Error::deprecatedFunctionWarning|trigger_error\(.*DEPRECATED)'

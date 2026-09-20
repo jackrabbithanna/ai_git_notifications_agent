@@ -6,12 +6,15 @@ import Inbox from "./views/Inbox";
 import Mine from "./views/Mine";
 import Settings from "./views/Settings";
 import Diagnostics from "./views/Diagnostics";
+import Impact from "./views/Impact";
+import Profiles from "./views/Profiles";
+import Digest from "./views/Digest";
 
-const VIEWS = ["Inbox", "Mine", "Settings", "Diagnostics"] as const;
+const VIEWS = ["Inbox", "Mine", "Impact", "Digest", "Profiles", "Settings", "Diagnostics"] as const;
 type View = (typeof VIEWS)[number];
 
 // Planned views not yet implemented (see PLAN.md milestones).
-const PLANNED = ["Impact", "Digest", "Profiles"];
+const PLANNED: string[] = [];
 
 function App() {
   const [view, setView] = useState<View>("Inbox");
@@ -35,11 +38,17 @@ function App() {
     });
     const offRep = Events.On("sync:report", () => setLastError(""));
     const offJudged = Events.On("judgments:updated", () => setRefreshKey((k) => k + 1));
+    const offImpact = Events.On("impact:updated", () => setRefreshKey((k) => k + 1));
+    const offSummary = Events.On("summary:updated", () => setRefreshKey((k) => k + 1));
+    const offDigest = Events.On("digest:updated", () => setRefreshKey((k) => k + 1));
     return () => {
       offUpdated();
       offErr();
       offRep();
       offJudged();
+      offImpact();
+      offSummary();
+      offDigest();
     };
   }, [loadAccounts]);
 
@@ -104,6 +113,9 @@ function App() {
         </header>
         {view === "Inbox" && <Inbox refreshKey={refreshKey} accountId={accountId} accounts={accounts} />}
         {view === "Mine" && <Mine refreshKey={refreshKey} accountId={accountId || accounts[0]?.id || 0} accounts={accounts} />}
+        {view === "Impact" && <Impact refreshKey={refreshKey} accountId={accountId} accounts={accounts} />}
+        {view === "Digest" && <Digest refreshKey={refreshKey} />}
+        {view === "Profiles" && <Profiles />}
         {view === "Settings" && <Settings onAccountsChanged={loadAccounts} />}
         {view === "Diagnostics" && <Diagnostics accounts={accounts} />}
       </main>

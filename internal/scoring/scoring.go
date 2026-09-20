@@ -17,6 +17,7 @@ type Weights struct {
 	Relevance float64            `json:"relevance"` // × relevance (0..1)
 	Recency   float64            `json:"recency"`   // × exp(-age / RecencyHalfLifeH)
 	Resolved  float64            `json:"resolved"`  // − × P(resolved)
+	Impact    float64            `json:"impact"`    // × downstream impact level / 3 (PRs with an analysis)
 	Kind      map[string]float64 `json:"kind"`
 	Relation  map[string]float64 `json:"relation"`
 	// RecencyHalfLifeH is the age in hours at which the recency term halves.
@@ -32,7 +33,7 @@ type Weights struct {
 // Defaults are a reasonable starting point; M5 tunes them on labeled data.
 func Defaults() Weights {
 	return Weights{
-		Action: 1.0, Urgency: 0.8, Relevance: 0.6, Recency: 0.3, Resolved: 0.8,
+		Action: 1.0, Urgency: 0.8, Relevance: 0.6, Recency: 0.3, Resolved: 0.8, Impact: 0.7,
 		Kind: map[string]float64{
 			"review_requested": 0.6, "mention": 0.5, "assignment": 0.5, "blocking_or_failing": 0.6,
 			"review": 0.3, "comment": 0.2, "new_pr": 0.15, "new_issue": 0.15, "state_change": 0.1,
@@ -48,12 +49,14 @@ func Defaults() Weights {
 
 // Inputs are the facts scoring looks at for one thread.
 type Inputs struct {
-	Kind       string
-	Relations  []string
-	UpdatedAt  time.Time
-	Answers    map[string]judge.Answer // nil when not judged
-	Calibrated bool
-	IsAuthor   bool
+	Kind         string
+	Relations    []string
+	UpdatedAt    time.Time
+	Answers      map[string]judge.Answer // nil when not judged
+	Calibrated   bool
+	IsAuthor     bool
+	ImpactLevel  int // -1 when no impact analysis; 0 none … 3 certain
+	ImpactMerged bool
 }
 
 // Bucket names.
@@ -65,19 +68,20 @@ const (
 
 // Result is the scored view of a thread.
 type Result struct {
-	Priority   float64 `json:"priority"`   // raw weighted sum
-	Percent    int     `json:"percent"`    // priority normalised to 0..100 for display
-	Bucket     string  `json:"bucket"`     // needs_me | normal | resolved
-	Pinned     bool    `json:"pinned"`     // hard rule: blocking_or_failing on my own item
-	Unsure     bool    `json:"unsure"`     // category confidence below threshold
-	Category   string  `json:"category"`   // judged category, "" when not judged
-	NextAction string  `json:"nextAction"` // judged next action
-	Judged     bool    `json:"judged"`
+	Priority    float64 `json:"priority"`   // raw weighted sum
+	Percent     int     `json:"percent"`    // priority normalised to 0..100 for display
+	Bucket      string  `json:"bucket"`     // needs_me | normal | resolved
+	Pinned      bool    `json:"pinned"`     // hard rule: blocking_or_failing on my own item
+	Unsure      bool    `json:"unsure"`     // category confidence below threshold
+	Category    string  `json:"category"`   // judged category, "" when not judged
+	NextAction  string  `json:"nextAction"` // judged next action
+	Judged      bool    `json:"judged"`
+	ImpactLevel int     `json:"impactLevel"` // -1 none; 0..3
 }
 
 // Score applies the weights to one thread.
 func Score(w Weights, in Inputs, now time.Time) Result {
-	r := Result{Bucket: BucketNormal}
+	r := Result{Bucket: BucketNormal, ImpactLevel: -1}
 	p := w.Kind[in.Kind]
 	for _, rel := range in.Relations {
 		p += w.Relation[rel]
@@ -118,6 +122,15 @@ func Score(w Weights, in Inputs, now time.Time) Result {
 		}
 		if res > w.ResolvedThreshold && !r.Pinned {
 			r.Bucket = BucketResolved
+		}
+	}
+	if in.ImpactLevel >= 0 {
+		r.ImpactLevel = in.ImpactLevel
+		p += w.Impact * float64(in.ImpactLevel) / 3
+		maxP += w.Impact
+		// A certain downstream impact is worth attention whether the PR is open (comment) or landed (adapt).
+		if in.ImpactLevel >= 3 && r.Bucket != BucketNeedsMe {
+			r.Bucket = BucketNeedsMe
 		}
 	}
 	r.Priority = p

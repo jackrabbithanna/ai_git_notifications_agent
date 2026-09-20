@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { DiagnosticsService, JudgeService } from "../../bindings/ghinbox/internal/services";
 import type { Environment, JudgeStatus, MCPServerInfo } from "../../bindings/ghinbox/internal/services";
 import type { Stats, ToolInfo } from "../../bindings/ghinbox/internal/ghmcp";
-import type { Account } from "../../bindings/ghinbox/internal/store";
+import type { Account, UsageRow } from "../../bindings/ghinbox/internal/store";
 import { fmtDateTime } from "../lib/format";
 import { Button, Card, Chip, ErrorText, errMsg } from "../lib/ui";
 
@@ -15,6 +15,7 @@ export default function Diagnostics({ accounts: allAccounts }: { accounts: Accou
   const [stats, setStats] = useState<Record<string, Stats | undefined>>({});
   const [selected, setSelected] = useState<number>(accounts[0]?.id ?? 0);
   const [judge, setJudge] = useState<JudgeStatus | null>(null);
+  const [usage, setUsage] = useState<UsageRow[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -22,6 +23,9 @@ export default function Diagnostics({ accounts: allAccounts }: { accounts: Accou
     DiagnosticsService.MCPServerInfo().then(setMcp).catch((e) => setError(errMsg(e)));
     DiagnosticsService.Environment().then(setEnv).catch((e) => setError(errMsg(e)));
     JudgeService.Status().then(setJudge).catch((e) => setError(errMsg(e)));
+    DiagnosticsService.Usage()
+      .then((u) => setUsage(u ?? []))
+      .catch((e) => setError(errMsg(e)));
     DiagnosticsService.ClientStats()
       .then((s) => setStats((s ?? {}) as Record<string, Stats | undefined>))
       .catch((e) => setError(errMsg(e)));
@@ -159,6 +163,38 @@ export default function Diagnostics({ accounts: allAccounts }: { accounts: Accou
               {judge.stats.inputTokens} in / {judge.stats.outputTokens} out
             </dd>
           </dl>
+        )}
+      </Card>
+
+      <Card title="Model usage (stored generations)">
+        {usage.length === 0 && <p className="text-sm text-neutral-500">Nothing generated yet.</p>}
+        {usage.length > 0 && (
+          <table className="w-full text-left text-xs">
+            <thead className="text-neutral-500">
+              <tr>
+                <th className="py-1 pr-2">Source</th>
+                <th className="py-1 pr-2">Provider</th>
+                <th className="py-1 pr-2">Model</th>
+                <th className="py-1 pr-2">Count</th>
+                <th className="py-1 pr-2">Tokens in</th>
+                <th className="py-1 pr-2">Tokens out</th>
+                <th className="py-1">Avg latency</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usage.map((r, i) => (
+                <tr key={i} className="border-t border-neutral-100 dark:border-neutral-800">
+                  <td className="py-1 pr-2">{r.source}</td>
+                  <td className="py-1 pr-2">{r.provider}</td>
+                  <td className="py-1 pr-2 font-mono">{r.model}</td>
+                  <td className="py-1 pr-2">{r.count}</td>
+                  <td className="py-1 pr-2">{r.inputTokens}</td>
+                  <td className="py-1 pr-2">{r.outputTokens}</td>
+                  <td className="py-1">{Math.round(r.avgLatencyMs)} ms</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </Card>
 

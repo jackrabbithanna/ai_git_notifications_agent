@@ -1,0 +1,35 @@
+# Generic fallback profile used for on-demand analysis of any repository that
+# no specific profile covers. Layers are broad path conventions.
+id: generic
+name: Generic
+repos: []
+downstream_description: >
+  I build software on top of this project. Flag changes to public APIs,
+  exported types, configuration formats, data schemas, CLI flags and
+  packaging that could require changes or re-testing in dependent code.
+layers:
+  - id: api
+    label: Public API
+    weight: 1.0
+    paths: ["**/api/**", "**/*.proto", "**/openapi*", "**/swagger*", "**/public/**", "**/schema/**", "**/migrations/**"]
+  - id: core
+    label: Core code
+    weight: 0.7
+    paths: ["src/**", "lib/**", "internal/**", "pkg/**", "app/**", "cmd/**"]
+  - id: ui
+    label: UI
+    weight: 0.5
+    paths: ["**/templates/**", "**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.html", "**/*.css", "**/*.scss"]
+  - id: build
+    label: Packaging & build
+    weight: 0.4
+    paths: ["package.json", "composer.json", "go.mod", "Cargo.toml", "pyproject.toml", "setup.py", "Makefile", "Dockerfile*", ".github/**", "**/*.gradle", "pom.xml"]
+ignore_paths: ["**/test/**", "**/tests/**", "**/*_test.go", "**/*.spec.*", "**/*.test.*", "**/*.md", "docs/**"]
+signals: ["BREAKING", "deprecat", "remove", "rename", "migration", "schema", "incompatible", "major", "signature", "config"]
+surface_patterns:
+  - id: exported_symbol
+    pattern: '^[+-]\s*(export\s+(default\s+)?(function|class|const|interface|type)|public\s+(static\s+)?function|func\s+[A-Z]\w*\(|def\s+[a-z_]+\(|pub\s+fn\s+)'
+  - id: deprecation
+    pattern: '^[+-].*(@deprecated|Deprecated:|DeprecationWarning)'
+  - id: schema_change
+    pattern: '^[+-]\s*(ALTER TABLE|CREATE TABLE|DROP TABLE|ADD COLUMN|DROP COLUMN)'

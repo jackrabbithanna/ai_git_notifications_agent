@@ -50,10 +50,15 @@ func (s *Source) Enrich(ctx context.Context, t store.Thread) (store.Enrichment, 
 		User   struct {
 			Login string `json:"login"`
 		} `json:"user"`
-		Labels labelList `json:"labels"`
+		Labels    labelList `json:"labels"`
+		CreatedAt string    `json:"created_at"`
 	}
 	if err := json.Unmarshal(raw, &item); err != nil {
 		return e, fmt.Errorf("enrich %s#%d: decode: %w", t.Repo, t.SubjectNumber, err)
+	}
+	if c, err := time.Parse(time.RFC3339, item.CreatedAt); err == nil {
+		c = c.UTC()
+		e.ItemCreatedAt = &c
 	}
 	e.ItemAuthor = item.User.Login
 	e.ItemState = item.State

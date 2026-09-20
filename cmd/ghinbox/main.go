@@ -64,6 +64,18 @@ func main() {
 		err = cmdSettings(ctx, os.Args[2:])
 	case "jev-key":
 		err = cmdJevKey(ctx, os.Args[2:])
+	case "analyze":
+		err = cmdAnalyze(ctx, os.Args[2:])
+	case "impact":
+		err = cmdImpact(ctx, os.Args[2:])
+	case "profiles":
+		err = cmdProfiles(ctx, os.Args[2:])
+	case "summarize":
+		err = cmdSummarize(ctx, os.Args[2:])
+	case "digest":
+		err = cmdDigest(ctx, os.Args[2:])
+	case "usage":
+		err = cmdUsage(ctx)
 	case "read", "done", "snooze", "undone":
 		err = cmdAction(ctx, os.Args[1], os.Args[2:])
 	case "help", "-h", "--help":
@@ -97,7 +109,17 @@ func usage() {
   judge [--account L] [--limit N]            enrich + judge stale/unjudged unread threads (triage.v1)
   explain [--account L] [--now] THREAD_ID    show state, answers, probabilities and score (--now judges first)
   settings [show | set KEY VALUE]            KEY: provider(auto|jev|ollama|off) jev.model jev.url ollama.url ollama.model max concurrency interests
+                                             impact.auto impact.max impact.note-model impact.note-level(2|3|4) impact.scan-landed impact.landed-days
+                                             summary.model summary.top summary.every digest.model digest.auto digest.hours notify.needs-me notify.impact-level(3|4)
   jev-key --token-file F                     store the TypeSafe Jev API key in the keyring (empty file removes it)
+  analyze [--account L] [--profile ID] [--force] [--note] REPO#N   impact-analyse one PR/MR (auto profile, generic fallback)
+  analyze [--account L] --pending            analyse pending PR threads in profile repos + scan landed changes
+  impact [--landed] [--min 0-3] [--account L]  list analysed PRs (open by default; --landed for merged)
+  profiles list | show ID | enable ID | disable ID | import FILE | delete ID
+  summarize [--account L] [--force] THREAD_ID   generate/show the Ollama summary of a thread
+  summarize --top N                          summarise the N highest-priority threads lacking a summary
+  digest [--hours 24] [--generate]           show the latest digest, or generate one for the period
+  usage                                      token usage and latency per provider/model
   read|done|undone [--account L] THREAD_ID   local triage state (mirrored to GitHub only in write mode 'notifications')
   snooze [--account L] --for 2h THREAD_ID
   version
@@ -143,7 +165,10 @@ func openEnv(needMCP bool) (*env, error) {
 		}
 		e.mcp = info
 	}
-	e.pipe = pipeline.New(pipeline.Deps{DB: db, Secrets: e.sec, MCPPath: e.mcp.Path, Logger: logger, ServerLog: serverLog})
+	e.pipe = pipeline.New(pipeline.Deps{DB: db, Secrets: e.sec, MCPPath: e.mcp.Path, Logger: logger, ServerLog: serverLog,
+		Notify: func(n pipeline.Notification) {
+			fmt.Fprintf(os.Stderr, "NOTIFY: %s — %s %s\n", n.Title, n.Body, n.URL)
+		}})
 	e.pipe.SetGitLabFactory(gitlabsrc.Factory())
 	return e, nil
 }
@@ -744,6 +769,12 @@ func cmdSettings(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "show" {
 		fmt.Printf("provider:      %s\njev.model:     %s\njev.url:       %s\njev key:       %v\nollama.url:    %s\nollama.model:  %s\nmax:           %d\nconcurrency:   %d\ninterests:     %s\n",
 			st.Provider, st.JevModel, st.JevBaseURL, e.pipe.HasJevKey(), st.OllamaURL, orUnknown(st.OllamaJudgeModel), st.MaxPerRun, st.Concurrency, orUnknown(st.ProfileInterests))
+		is, _ := e.pipe.ImpactSettings(ctx)
+		fmt.Printf("impact.auto:   %v\nimpact.max:    %d\nimpact.note-model: %s\nimpact.note-level: %d\nimpact.scan-landed: %v (every %d min, look back %d days)\n",
+			is.AutoAnalyze, is.MaxPerRun, orUnknown(is.NoteModel), is.AutoNoteMinLevel, is.ScanLanded, is.ScanLandedEveryMin, is.LandedLookbackDays)
+		ps, _ := e.pipe.ProseSettings(ctx)
+		fmt.Printf("summary.model: %s\nsummary.top:   %d (every %d min)\ndigest.model:  %s\ndigest.auto:   %v (every %d h, max %d threads)\nnotify.needs-me: %v\nnotify.impact-level: %d\n",
+			orUnknown(ps.SummaryModel), ps.TopN, ps.SummarizeEveryMin, orUnknown(ps.DigestModel), ps.AutoDigest, ps.DigestEveryH, ps.DigestMaxThreads, ps.NotifyNeedsMe, ps.NotifyImpactMinLevel)
 		return nil
 	}
 	if args[0] != "set" || len(args) < 3 {
@@ -772,6 +803,59 @@ func cmdSettings(ctx context.Context, args []string) error {
 		fmt.Sscanf(val, "%d", &st.MaxPerRun)
 	case "concurrency":
 		fmt.Sscanf(val, "%d", &st.Concurrency)
+	case "summary.model", "summary.top", "summary.every", "digest.model", "digest.auto", "digest.hours", "notify.needs-me", "notify.impact-level":
+		ps, err := e.pipe.ProseSettings(ctx)
+		if err != nil {
+			return err
+		}
+		onoff := val == "true" || val == "on" || val == "1"
+		switch key {
+		case "summary.model":
+			ps.SummaryModel = val
+		case "summary.top":
+			fmt.Sscanf(val, "%d", &ps.TopN)
+		case "summary.every":
+			fmt.Sscanf(val, "%d", &ps.SummarizeEveryMin)
+		case "digest.model":
+			ps.DigestModel = val
+		case "digest.auto":
+			ps.AutoDigest = onoff
+		case "digest.hours":
+			fmt.Sscanf(val, "%d", &ps.DigestEveryH)
+		case "notify.needs-me":
+			ps.NotifyNeedsMe = onoff
+		case "notify.impact-level":
+			fmt.Sscanf(val, "%d", &ps.NotifyImpactMinLevel)
+		}
+		if err := e.pipe.SetProseSettings(ctx, ps); err != nil {
+			return err
+		}
+		fmt.Printf("%s = %s\n", key, val)
+		return nil
+	case "impact.max", "impact.note-model", "impact.auto", "impact.scan-landed", "impact.note-level", "impact.landed-days":
+		is, err := e.pipe.ImpactSettings(ctx)
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "impact.max":
+			fmt.Sscanf(val, "%d", &is.MaxPerRun)
+		case "impact.note-model":
+			is.NoteModel = val
+		case "impact.auto":
+			is.AutoAnalyze = val == "true" || val == "on" || val == "1"
+		case "impact.scan-landed":
+			is.ScanLanded = val == "true" || val == "on" || val == "1"
+		case "impact.note-level":
+			fmt.Sscanf(val, "%d", &is.AutoNoteMinLevel)
+		case "impact.landed-days":
+			fmt.Sscanf(val, "%d", &is.LandedLookbackDays)
+		}
+		if err := e.pipe.SetImpactSettings(ctx, is); err != nil {
+			return err
+		}
+		fmt.Printf("%s = %s\n", key, val)
+		return nil
 	default:
 		return fmt.Errorf("settings: unknown key %q", key)
 	}
@@ -809,6 +893,357 @@ func cmdJevKey(ctx context.Context, args []string) error {
 	} else {
 		fmt.Printf("Jev key stored in %s\n", e.sec.Backend())
 	}
+	return nil
+}
+
+func cmdAnalyze(ctx context.Context, args []string) error {
+	fs, login := newFlags("analyze")
+	profile := fs.String("profile", "", "profile id (default: matching profile, else generic)")
+	force := fs.Bool("force", false, "re-run even if the head sha is unchanged")
+	note := fs.Bool("note", false, "also generate the impact note (Ollama)")
+	pending := fs.Bool("pending", false, "analyse pending PR threads in profile repos and scan landed changes")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	e, err := openEnv(true)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	acct, err := e.account(ctx, *login)
+	if err != nil {
+		return err
+	}
+	if *pending {
+		rep, err := e.pipe.AnalyzePending(ctx, acct, 0)
+		fmt.Printf("%s: candidates %d, analysed %d, skipped %d, failed %d, landed %d in %s\n", rep.Login, rep.Candidates, rep.Analysed, rep.Skipped, rep.Failed, rep.Landed, rep.Duration.Round(time.Millisecond))
+		for _, m := range rep.Errors {
+			fmt.Printf("  - %s\n", m)
+		}
+		return err
+	}
+	if fs.NArg() < 1 {
+		return errors.New("analyze: want REPO#N (e.g. civicrm/civicrm-core#36990) or --pending")
+	}
+	repo, number, err := parseRef(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	a, ran, err := e.pipe.AnalyzePR(ctx, acct, repo, number, *profile, *force)
+	if err != nil {
+		return err
+	}
+	printAnalysis(a, ran)
+	if *note {
+		n, err := e.pipe.ImpactNote(ctx, acct, repo, number)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("\nNOTE (%s):\n  what changed: %s\n  why it matters: %s\n  surfaces: %s\n  checks: %s\n  migration: %s\n  confidence: %s\n",
+			"ollama", n.WhatChanged, n.WhyItMattersForDownstream, strings.Join(n.SurfacesChanged, "; "), strings.Join(n.RecommendedChecks, "; "), n.MigrationHints, n.ConfidenceNote)
+	}
+	return nil
+}
+
+var impactLevels = []string{"none", "possible", "likely", "certain"}
+
+func levelName(l int) string {
+	if l < 0 || l >= len(impactLevels) {
+		return "unanalysed"
+	}
+	return impactLevels[l]
+}
+
+func printAnalysis(a store.Analysis, ran bool) {
+	via := "reused (same head sha)"
+	if ran {
+		via = "analysed now"
+	}
+	errText := ""
+	if a.Error != "" {
+		errText = " ERROR: " + a.Error
+	}
+	fmt.Printf("%s#%d — %s [%s] %s\n  profile %s, head %s, judged by %s %s%s\n", a.Repo, a.Number, a.Title, a.State, via, a.ProfileID, trunc(a.HeadSHA, 12), orUnknown(a.Provider), a.Model, errText)
+	var report struct {
+		Layers []struct {
+			ID        string   `json:"id"`
+			Files     []string `json:"files"`
+			Additions int      `json:"additions"`
+			Deletions int      `json:"deletions"`
+		} `json:"layers"`
+		Signals     []string `json:"signals"`
+		SurfaceHits []struct {
+			PatternID string `json:"patternId"`
+			Path      string `json:"path"`
+			Line      string `json:"line"`
+		} `json:"surfaceHits"`
+		TotalFiles int `json:"totalFiles"`
+		Ignored    int `json:"ignored"`
+	}
+	_ = json.Unmarshal(a.ReportJSON, &report)
+	fmt.Printf("  files %d (ignored %d); signals %v\n", report.TotalFiles, report.Ignored, report.Signals)
+	for _, l := range report.Layers {
+		fmt.Printf("  layer %-12s %3d files +%d/-%d  e.g. %s\n", l.ID, len(l.Files), l.Additions, l.Deletions, trunc(strings.Join(l.Files, ", "), 80))
+	}
+	for i, h := range report.SurfaceHits {
+		if i >= 6 {
+			fmt.Printf("  … %d more surface hits\n", len(report.SurfaceHits)-6)
+			break
+		}
+		fmt.Printf("  surface %-18s %s: %s\n", h.PatternID, h.Path, trunc(h.Line, 90))
+	}
+	var answers map[string]struct {
+		Kind          string             `json:"kind"`
+		Noul          float64            `json:"noul"`
+		Choice        string             `json:"choice"`
+		Score         float64            `json:"score"`
+		Confidence    float64            `json:"confidence"`
+		Probabilities map[string]float64 `json:"probabilities"`
+	}
+	_ = json.Unmarshal(a.AnswersJSON, &answers)
+	for _, id := range []string{"change_kind", "downstream_impact", "affects_downstream", "backward_compatible", "needs_my_attention_now"} {
+		ans, ok := answers[id]
+		if !ok {
+			continue
+		}
+		switch ans.Kind {
+		case "noul":
+			fmt.Printf("    %-24s %.2f\n", id, ans.Noul)
+		case "choice":
+			fmt.Printf("    %-24s %s (conf %.2f)  %s\n", id, ans.Choice, ans.Confidence, probs(ans.Probabilities))
+		case "score":
+			fmt.Printf("    %-24s %.2f/3 → %s (conf %.2f)  %s\n", id, ans.Score, levelName(a.ImpactLevel), ans.Confidence, probs(ans.Probabilities))
+		}
+	}
+}
+
+func parseRef(s string) (string, int, error) {
+	i := strings.LastIndexAny(s, "#!")
+	if i <= 0 {
+		return "", 0, fmt.Errorf("want REPO#N, got %q", s)
+	}
+	n, err := strconv.Atoi(s[i+1:])
+	if err != nil {
+		return "", 0, fmt.Errorf("want REPO#N, got %q", s)
+	}
+	return s[:i], n, nil
+}
+
+func cmdImpact(ctx context.Context, args []string) error {
+	fs, login := newFlags("impact")
+	landed := fs.Bool("landed", false, "merged PRs only (default: open/closed)")
+	min := fs.Int("min", 0, "minimum impact level 0-3")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	e, err := openEnv(false)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	var acctID int64
+	if *login != "" {
+		acct, err := e.account(ctx, *login)
+		if err != nil {
+			return err
+		}
+		acctID = acct.ID
+	}
+	views, err := e.pipe.ListImpact(ctx, store.AnalysisQuery{AccountID: acctID, MinLevel: *min, Landed: *landed, Limit: 200})
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(w, "LEVEL\tKIND\tREPO\t#\tSTATE\tLAYERS\tHITS\tNOTE\tTITLE\n")
+	for _, v := range views {
+		var layers []string
+		for _, l := range v.Report.Layers {
+			layers = append(layers, l.ID)
+		}
+		note := ""
+		if v.Note != nil {
+			note = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%d\t%s\t%s\n", levelName(v.Analysis.ImpactLevel), orUnknown(v.Analysis.ChangeKind), v.Analysis.Repo, v.Analysis.Number, v.Analysis.State, strings.Join(layers, ","), len(v.Report.SurfaceHits), note, trunc(v.Analysis.Title, 60))
+	}
+	w.Flush()
+	fmt.Printf("%d analyses\n", len(views))
+	return nil
+}
+
+func cmdProfiles(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+	e, err := openEnv(false)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	switch args[0] {
+	case "list":
+		ps, problems, err := e.pipe.Profiles(ctx)
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		fmt.Fprintf(w, "ID\tNAME\tSOURCE\tENABLED\tREPOS\tLAYERS\n")
+		for _, p := range ps {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%d\t%d\n", p.ID, p.Name, p.Source, p.Enabled, len(p.Repos), len(p.Layers))
+		}
+		w.Flush()
+		for _, pr := range problems {
+			fmt.Println("problem:", pr)
+		}
+		return nil
+	case "show":
+		if len(args) < 2 {
+			return errors.New("profiles show: want ID")
+		}
+		ps, _, err := e.pipe.Profiles(ctx)
+		if err != nil {
+			return err
+		}
+		for _, p := range ps {
+			if p.ID == args[1] {
+				fmt.Print(p.YAML)
+				return nil
+			}
+		}
+		return fmt.Errorf("profile %q not found", args[1])
+	case "enable", "disable":
+		if len(args) < 2 {
+			return fmt.Errorf("profiles %s: want ID", args[0])
+		}
+		return e.db.SetProfileEnabled(ctx, args[1], args[0] == "enable")
+	case "import":
+		if len(args) < 2 {
+			return errors.New("profiles import: want FILE")
+		}
+		raw, err := os.ReadFile(args[1])
+		if err != nil {
+			return err
+		}
+		p, err := e.pipe.SaveProfile(ctx, string(raw), true)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("profile %s (%s) saved: %d repos, %d layers\n", p.ID, p.Name, len(p.Repos), len(p.Layers))
+		return nil
+	case "delete":
+		if len(args) < 2 {
+			return errors.New("profiles delete: want ID")
+		}
+		return e.db.DeleteUserProfile(ctx, args[1])
+	}
+	return fmt.Errorf("profiles: unknown subcommand %q", args[0])
+}
+
+func cmdSummarize(ctx context.Context, args []string) error {
+	fs, login := newFlags("summarize")
+	force := fs.Bool("force", false, "regenerate even if a current summary exists")
+	top := fs.Int("top", 0, "summarise the N highest-priority threads lacking a summary")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	e, err := openEnv(true)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	if *top > 0 {
+		n, err := e.pipe.SummarizeTop(ctx, *top)
+		fmt.Printf("summarised %d threads\n", n)
+		return err
+	}
+	if fs.NArg() < 1 {
+		return errors.New("summarize: want THREAD_ID or --top N")
+	}
+	acct, err := e.account(ctx, *login)
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+	v, err := e.pipe.Summarize(ctx, acct, fs.Arg(0), *force)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s (%s, %s, %s)\n  %s\n", fs.Arg(0), v.Summary.Model, time.Since(start).Round(time.Millisecond), map[bool]string{true: "stale", false: "current"}[v.Stale], v.Content.Summary)
+	for _, k := range v.Content.KeyPoints {
+		fmt.Printf("  - %s\n", k)
+	}
+	if len(v.Content.AsksOfMe) > 0 {
+		fmt.Printf("  asks of me: %s\n", strings.Join(v.Content.AsksOfMe, "; "))
+	}
+	if v.Content.ChangedSinceLastRead != "" {
+		fmt.Printf("  changed since last read: %s\n", v.Content.ChangedSinceLastRead)
+	}
+	return nil
+}
+
+func cmdDigest(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("digest", flag.ContinueOnError)
+	hours := fs.Int("hours", 24, "period to cover when generating")
+	generate := fs.Bool("generate", false, "generate a new digest now")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	e, err := openEnv(false)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	var v pipeline.DigestView
+	if *generate {
+		start := time.Now()
+		v, err = e.pipe.GenerateDigest(ctx, time.Now().Add(-time.Duration(*hours)*time.Hour))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("generated in %s with %s over %d threads\n", time.Since(start).Round(time.Second), v.Digest.Model, v.Digest.ThreadCount)
+	} else {
+		ds, err := e.pipe.Digests(ctx, 1)
+		if err != nil {
+			return err
+		}
+		if len(ds) == 0 {
+			return errors.New("no digest yet; run: ghinbox digest --generate")
+		}
+		v = ds[0]
+		fmt.Printf("digest #%d for %s → %s (%s, %d threads)\n", v.Digest.ID, v.Digest.PeriodStart.Local().Format("Jan 02 15:04"), v.Digest.PeriodEnd.Local().Format("Jan 02 15:04"), v.Digest.Model, v.Digest.ThreadCount)
+	}
+	fmt.Printf("\n%s\n", v.Content.Headline)
+	for _, sec := range v.Content.Sections {
+		fmt.Printf("\n## %s\n", sec.Title)
+		for _, it := range sec.Items {
+			fmt.Printf("  - %s — %s: %s\n", it.Ref, it.Title, it.Why)
+		}
+	}
+	if len(v.Content.SuggestedActions) > 0 {
+		fmt.Println("\nSuggested actions:")
+		for _, a := range v.Content.SuggestedActions {
+			fmt.Printf("  * %s\n", a)
+		}
+	}
+	return nil
+}
+
+func cmdUsage(ctx context.Context) error {
+	e, err := openEnv(false)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	rows, err := e.db.UsageStats(ctx)
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(w, "SOURCE\tPROVIDER\tMODEL\tCOUNT\tTOKENS IN\tTOKENS OUT\tAVG LATENCY\n")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\t%.0fms\n", r.Source, r.Provider, r.Model, r.Count, r.InputTokens, r.OutputTokens, r.AvgLatencyMs)
+	}
+	w.Flush()
 	return nil
 }
 

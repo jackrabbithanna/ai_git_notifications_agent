@@ -111,12 +111,14 @@ func (c Config) args() []string {
 // ReadOnly reports whether the server will be started with --read-only.
 func (c Config) ReadOnly() bool { return c.WriteMode == "" || c.WriteMode == WriteModeReadOnly }
 
-// session is the subset of *mcp.ClientSession the client uses (fakeable in tests).
-type session interface {
+// Session is the subset of *mcp.ClientSession the client uses (fakeable in tests).
+type Session interface {
 	ListTools(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error)
 	CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error)
 	Close() error
 }
+
+type session = Session
 
 // Stats are per-client counters surfaced in Diagnostics.
 type Stats struct {
@@ -147,6 +149,14 @@ func New(cfg Config) *Client {
 		stats:   Stats{Calls: map[string]int{}, Errors: map[string]int{}},
 	}
 	c.connect = c.spawn
+	return c
+}
+
+// NewForTest builds a client whose sessions come from connect instead of a
+// subprocess (in-memory MCP servers in tests).
+func NewForTest(cfg Config, connect func(ctx context.Context) (Session, error)) *Client {
+	c := New(cfg)
+	c.connect = func(ctx context.Context) (session, error) { return connect(ctx) }
 	return c
 }
 

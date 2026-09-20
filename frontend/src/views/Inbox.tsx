@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { InboxService, JudgeService } from "../../bindings/ghinbox/internal/services";
+import { ImpactService, InboxService, JudgeService } from "../../bindings/ghinbox/internal/services";
+import { levelName } from "./Impact";
 import type { Scored, JudgeReport } from "../../bindings/ghinbox/internal/pipeline";
 import Explain from "./Explain";
 import type { InboxQuery, InboxView } from "../../bindings/ghinbox/internal/services";
@@ -184,6 +185,10 @@ function ThreadRow({
           {s.pinned && <Chip tone="red">blocking</Chip>}
           {s.category && <Chip tone={s.bucket === "needs_me" ? "blue" : "neutral"}>{s.category.replace(/_/g, " ")}</Chip>}
           {s.unsure && <Chip tone="amber">unsure</Chip>}
+          {s.impactLevel >= 1 && <Chip tone={s.impactLevel >= 3 ? "red" : s.impactLevel === 2 ? "amber" : "blue"}>impact: {levelName(s.impactLevel)}</Chip>}
+          {t.enrichedVersion && (t.activityKind === "new_pr" || t.activityKind === "new_issue") && (
+            <Chip tone="neutral">{t.itemCreatedAt && new Date(t.updatedAt).getTime() - new Date(t.itemCreatedAt).getTime() < 30 * 60 * 1000 ? "new" : "updated"}</Chip>
+          )}
           <button
             type="button"
             className="truncate text-left text-sm font-medium hover:underline"
@@ -243,6 +248,15 @@ function ThreadRow({
         >
           Mute
         </Button>
+        {(t.subjectType === "PullRequest" || t.subjectType === "MergeRequest") && t.subjectNumber > 0 && (
+          <Button
+            kind="ghost"
+            onClick={() => act("analyze", ImpactService.Analyze(t.accountId, t.repo, t.subjectNumber, "", false))}
+            title="Impact analysis against the matching profile (generic if none); see the Impact view"
+          >
+            Analyze
+          </Button>
+        )}
         <Button kind="ghost" onClick={onToggle} title="Why this score? Answers, probabilities and the state the judge saw">
           {open ? "Hide" : "Why"}
         </Button>

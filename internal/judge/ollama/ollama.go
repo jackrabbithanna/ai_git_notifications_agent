@@ -4,17 +4,16 @@
 package ollama
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"ghinbox/internal/judge"
+	llmollama "ghinbox/internal/llm/ollama"
 )
 
 const DefaultURL = "http://localhost:11434"
@@ -71,7 +70,7 @@ func (j *Judge) Ask(ctx context.Context, state any, questions []judge.Question) 
 	}
 	schema := Schema(questions)
 	user := "STATE:\n" + string(stateJSON) + "\n\nQUESTIONS:\n" + renderQuestions(questions)
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":      j.cfg.Model,
 		"stream":     false,
 		"format":     schema,
@@ -83,24 +82,17 @@ func (j *Judge) Ask(ctx context.Context, state any, questions []judge.Question) 
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": user},
 		},
-	})
-	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(j.cfg.BaseURL, "/")+"/api/chat", bytes.NewReader(body))
-	if err != nil {
-		return judge.Response{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	res, err := j.hc.Do(req)
+	start := time.Now()
+	raw, status, err := llmollama.PostChat(ctx, j.hc, j.cfg.BaseURL, payload)
 	if err != nil {
 		return judge.Response{}, fmt.Errorf("%w: ollama: %v", judge.ErrUnavailable, err)
 	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
-	if res.StatusCode != http.StatusOK {
-		if res.StatusCode == http.StatusNotFound {
+	if status != http.StatusOK {
+		if status == http.StatusNotFound {
 			return judge.Response{}, fmt.Errorf("%w: ollama: model %q not found (pull it first)", judge.ErrInvalidRequest, j.cfg.Model)
 		}
-		return judge.Response{}, fmt.Errorf("%w: ollama HTTP %d: %s", judge.ErrUnavailable, res.StatusCode, truncate(raw, 300))
+		return judge.Response{}, fmt.Errorf("%w: ollama HTTP %d: %s", judge.ErrUnavailable, status, truncate(raw, 300))
 	}
 	var chat struct {
 		Model   string `json:"model"`

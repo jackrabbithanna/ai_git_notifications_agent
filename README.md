@@ -13,7 +13,14 @@ GitLab (gitlab.com or self-hosted) as a second source: To-Do list, watched-proje
 via the official REST client. **M2** adds typed triage judgments: TypeSafe Jev (calibrated) or an
 Ollama model (uncalibrated fallback) answers six questions per thread (category, needs me, urgency,
 relevance, resolved, next action); a weighted score orders the inbox and re-ranks instantly when
-weights change; an explain panel shows the probabilities and the state the judge saw.
+weights change; an explain panel shows the probabilities and the state the judge saw. **M3** adds
+the PR impact engine: repo-agnostic impact profiles (built-in CiviCRM + generic, editable YAML),
+deterministic analysis of a PR/MR's changed files (layers touched, signal keywords, surface-pattern
+hits), `impact.v1` judgments (change kind, downstream impact none…certain, backward compatibility),
+Ollama-written impact notes, an Impact view (proposed / landed) and a scan of recently merged PRs
+in profile repos. **M4** adds prose: Ollama thread summaries (lazy: on open, top-N after sync, with
+"what changed since last read"), a period digest, desktop notifications for threads entering
+"Needs me" and for high-impact PRs, and a usage/latency table.
 
 ## Stack
 
@@ -57,6 +64,13 @@ bin/ghinbox-cli settings set ollama.url http://gpu-box:11434 && bin/ghinbox-cli 
 bin/ghinbox-cli settings set interests "CiviCRM extensions using APIv4, Drupal integration"
 bin/ghinbox-cli judge                # enrich + judge unread threads lacking a fresh judgment
 bin/ghinbox-cli explain --now <thread-id>   # answers, probabilities, state and score for one thread
+bin/ghinbox-cli analyze civicrm/civicrm-core#36990 --note   # impact analysis (+ Ollama note) for one PR
+bin/ghinbox-cli analyze --pending          # analyse pending PR threads in profile repos + scan landed changes
+bin/ghinbox-cli impact --min 2 --landed    # analysed PRs at level likely+ that already merged
+bin/ghinbox-cli profiles list | show civicrm | import my-profile.yaml
+bin/ghinbox-cli summarize <thread-id>       # Ollama summary (key points, asks of me, changed since last read)
+bin/ghinbox-cli digest --generate --hours 24   # period digest; `digest` shows the latest
+bin/ghinbox-cli usage                       # tokens and latency per provider/model
 ```
 
 Judge providers: **Jev** (TypeSafe) is calibrated and fast (~0.6 s/thread). **Ollama** is the
@@ -101,7 +115,9 @@ internal/filter/         rule-based noise filter (bots, green CI, mutes)
 internal/pipeline/       sync → classify → filter → store; mine searches; local actions; scheduler
 internal/source/         forge seam; source/github (ghmcp) and source/gitlab (client-go REST)
 internal/judge/          typed judgments: triage.v1 rubric, jev (TypeSafe) and ollama providers
-internal/scoring/        composite priority from stored judgments + user weights
+internal/scoring/        composite priority from stored judgments + user weights (+ impact term)
+internal/profiles/       impact profiles (YAML, built-ins embedded), layer/signal/surface analysis
+internal/llm/            schema-constrained generation (Ollama): impact notes, summaries, digests
 internal/services/       Wails services: Accounts, Inbox, Mine, Diagnostics, Watches, Judge
 frontend/                React + TS + Tailwind (Vite)
 build/                   Wails build config and platform Taskfiles

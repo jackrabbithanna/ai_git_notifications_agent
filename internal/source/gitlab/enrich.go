@@ -36,6 +36,10 @@ func (s *Source) Enrich(ctx context.Context, t store.Thread) (store.Enrichment, 
 		e.ItemState = normalizeState(is.State)
 		e.ItemLabels = []string(is.Labels)
 		e.ItemBody = source.TrimText(is.Description, bodyLimit)
+		if is.CreatedAt != nil {
+			c := is.CreatedAt.UTC()
+			e.ItemCreatedAt = &c
+		}
 	case "MergeRequest":
 		mr, _, err := s.c.MergeRequests.GetMergeRequest(t.Repo, iid, nil, wc)
 		if err != nil {
@@ -48,6 +52,10 @@ func (s *Source) Enrich(ctx context.Context, t store.Thread) (store.Enrichment, 
 		e.ItemDraft = mr.Draft
 		e.ItemLabels = []string(mr.Labels)
 		e.ItemBody = source.TrimText(mr.Description, bodyLimit)
+		if mr.CreatedAt != nil {
+			c := mr.CreatedAt.UTC()
+			e.ItemCreatedAt = &c
+		}
 	}
 	m := reNote.FindStringSubmatch(t.LatestCommentURL)
 	if m == nil {

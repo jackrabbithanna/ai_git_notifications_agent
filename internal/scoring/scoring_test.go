@@ -64,3 +64,17 @@ func TestHardRulesAndDiscount(t *testing.T) {
 		t.Fatal("recency decay")
 	}
 }
+
+func TestImpactTerm(t *testing.T) {
+	w := Defaults()
+	now := time.Now()
+	none := Score(w, Inputs{Kind: "new_pr", UpdatedAt: now, ImpactLevel: -1}, now)
+	likely := Score(w, Inputs{Kind: "new_pr", UpdatedAt: now, ImpactLevel: 2}, now)
+	certain := Score(w, Inputs{Kind: "new_pr", UpdatedAt: now, ImpactLevel: 3, ImpactMerged: true}, now)
+	if !(certain.Priority > likely.Priority && likely.Priority > none.Priority) {
+		t.Fatalf("impact ordering: %.2f %.2f %.2f", certain.Priority, likely.Priority, none.Priority)
+	}
+	if certain.Bucket != BucketNeedsMe || likely.Bucket != BucketNormal || none.ImpactLevel != -1 || certain.ImpactLevel != 3 {
+		t.Fatalf("impact buckets: %+v %+v", certain, likely)
+	}
+}

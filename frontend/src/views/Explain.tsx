@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { JudgeService } from "../../bindings/ghinbox/internal/services";
+import { JudgeService, ProseService } from "../../bindings/ghinbox/internal/services";
+import type { SummaryView } from "../../bindings/ghinbox/internal/pipeline";
 import type { Explanation } from "../../bindings/ghinbox/internal/pipeline";
 import type { Answer } from "../../bindings/ghinbox/internal/judge";
 import { fmtDateTime } from "../lib/format";
@@ -12,6 +13,21 @@ export default function Explain({ accountId, threadId, onChanged }: { accountId:
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showState, setShowState] = useState(false);
+  const [summary, setSummary] = useState<SummaryView | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
+  const loadSummary = () => {
+    ProseService.Summary(accountId, threadId)
+      .then((s) => setSummary(s))
+      .catch(() => setSummary(null));
+  };
+  const summarize = () => {
+    setSummarizing(true);
+    setError("");
+    ProseService.Summarize(accountId, threadId, !!summary)
+      .then((s) => setSummary(s))
+      .catch((e) => setError(errMsg(e)))
+      .finally(() => setSummarizing(false));
+  };
 
   const load = (now: boolean) => {
     setBusy(true);
@@ -26,6 +42,7 @@ export default function Explain({ accountId, threadId, onChanged }: { accountId:
   };
   useEffect(() => {
     load(false);
+    loadSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, threadId]);
 
@@ -49,12 +66,41 @@ export default function Explain({ accountId, threadId, onChanged }: { accountId:
           <span className="text-neutral-500">not judged yet</span>
         )}
         <span className="ml-auto flex gap-1">
+          <Button onClick={summarize} disabled={summarizing} title="Ollama summary of the thread (can take a minute)">
+            {summarizing ? "Summarising…" : summary ? "Re-summarise" : "Summarise"}
+          </Button>
           <Button onClick={() => setShowState((s) => !s)}>{showState ? "Hide state" : "Show state"}</Button>
           <Button kind="primary" onClick={() => load(true)} disabled={busy}>
             {busy ? "Judging…" : "Judge now"}
           </Button>
         </span>
       </div>
+      {summary && (
+        <div className="mb-2 rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+            Summary · {summary.summary.model}
+            {summary.stale && <span className="text-amber-700"> · stale (thread changed since)</span>}
+          </div>
+          <p>{summary.content.summary}</p>
+          {(summary.content.key_points?.length ?? 0) > 0 && (
+            <ul className="mt-1 list-disc pl-4">
+              {summary.content.key_points?.map((k, i) => (
+                <li key={i}>{k}</li>
+              ))}
+            </ul>
+          )}
+          {(summary.content.asks_of_me?.length ?? 0) > 0 && (
+            <p className="mt-1">
+              <b>Asks of me:</b> {summary.content.asks_of_me?.join("; ")}
+            </p>
+          )}
+          {summary.content.changed_since_last_read && (
+            <p className="mt-1">
+              <b>Since last read:</b> {summary.content.changed_since_last_read}
+            </p>
+          )}
+        </div>
+      )}
       {t.enrichedVersion && (
         <div className="mb-2 text-neutral-600 dark:text-neutral-400">
           <span className="font-medium">Item</span> by {t.itemAuthor || "?"} · {t.itemState || "?"}

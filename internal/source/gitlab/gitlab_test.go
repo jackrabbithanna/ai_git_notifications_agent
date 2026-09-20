@@ -128,10 +128,21 @@ func fakeGitLab(t *testing.T) (*httptest.Server, *recorder) {
 			default:
 				write(w, []any{})
 			}
-		case strings.HasPrefix(p, "/api/v4/projects/dev/core") && r.Method == http.MethodGet:
+		case p == "/api/v4/projects/dev/core" && r.Method == http.MethodGet:
 			write(w, map[string]any{"id": 42, "path_with_namespace": "dev/core"})
 		case p == "/api/v4/projects/42/events":
 			write(w, events)
+		case strings.HasPrefix(p, "/api/v4/projects/dev/core/merge_requests/3/diffs"):
+			write(w, []map[string]any{
+				{"old_path": "CRM/Core/BAO/X.php", "new_path": "CRM/Core/BAO/X.php", "diff": "@@ -1 +1 @@\n-  public static function create(&$params) {\n+  public static function create(array $params) {\n", "new_file": false, "renamed_file": false, "deleted_file": false},
+				{"old_path": "", "new_path": "docs/new.md", "diff": "@@ -0,0 +1 @@\n+hi\n", "new_file": true, "renamed_file": false, "deleted_file": false},
+			})
+		case strings.HasPrefix(p, "/api/v4/projects/dev/core/merge_requests/3"):
+			write(w, map[string]any{"iid": 3, "title": "BAO create signature", "description": "BREAKING", "state": "merged", "sha": "deadbeef", "draft": false, "target_branch": "master",
+				"web_url": "https://lab.example.org/dev/core/-/merge_requests/3", "labels": []string{"api"}, "author": map[string]any{"username": "dave"},
+				"created_at": ts(-72 * time.Hour), "updated_at": ts(-1 * time.Hour), "merged_at": ts(-2 * time.Hour)})
+		case strings.HasPrefix(p, "/api/v4/projects/dev/core/merge_requests") && q.Get("state") == "merged":
+			write(w, []map[string]any{{"iid": 3, "title": "BAO create signature", "web_url": "https://lab.example.org/dev/core/-/merge_requests/3", "merged_at": ts(-2 * time.Hour), "updated_at": ts(-1 * time.Hour), "author": map[string]any{"username": "dave"}}})
 		case p == "/api/v4/projects/42/issues/8/unsubscribe" && r.Method == http.MethodPost:
 			write(w, issue(8, "Issue eight"))
 		default:
@@ -337,5 +348,28 @@ func TestClassifyTables(t *testing.T) {
 	}
 	if repoFromWebURL("https://lab.example.org/dev/core/-/issues/5") != "dev/core" || repoFromWebURL("https://gitlab.com/group/sub/proj/-/merge_requests/1") != "group/sub/proj" {
 		t.Fatal("repoFromWebURL")
+	}
+}
+
+func TestChangesAndRecentlyMerged(t *testing.T) {
+	srv, _ := fakeGitLab(t)
+	s := newSource(t, srv, false)
+	cs, err := s.Changes(context.Background(), "dev/core", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Kind != "mr" || cs.State != "merged" || cs.MergedAt == nil || cs.HeadSHA != "deadbeef" || cs.Base != "master" || cs.Author != "dave" || cs.Labels[0] != "api" {
+		t.Fatalf("changeset: %+v", cs)
+	}
+	if len(cs.Files) != 2 || cs.Files[0].Additions != 1 || cs.Files[0].Deletions != 1 || cs.Files[1].Status != "added" || cs.Files[1].Path != "docs/new.md" || cs.Additions != 2 {
+		t.Fatalf("files: %+v", cs.Files)
+	}
+	refs, err := s.RecentlyMerged(context.Background(), "dev/core", time.Now().Add(-24*time.Hour), 10)
+	if err != nil || len(refs) != 1 || refs[0].Number != 3 || refs[0].MergedAt == nil {
+		t.Fatalf("recently merged: %+v %v", refs, err)
+	}
+	e, err := s.Enrich(context.Background(), store.Thread{Repo: "dev/core", SubjectType: "MergeRequest", SubjectNumber: 3, UpdatedAt: time.Now()})
+	if err != nil || e.ItemCreatedAt == nil || e.ItemState != "merged" || e.ItemAuthor != "dave" {
+		t.Fatalf("enrich mr: %+v %v", e, err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"ghinbox/internal/filter"
 	"ghinbox/internal/ghmcp"
 	"ghinbox/internal/mcpbin"
+	"ghinbox/internal/store"
 )
 
 // DiagnosticsService exposes environment checks to the Diagnostics view.
@@ -92,4 +93,12 @@ func (s *DiagnosticsService) SetFilterRules(r filter.Rules) error {
 		return errors.New("app not initialised")
 	}
 	return s.App.Pipe.SetRules(context.Background(), r)
+}
+
+// Usage aggregates token usage and latency across judgments, analyses, summaries and digests.
+func (s *DiagnosticsService) Usage() ([]store.UsageRow, error) {
+	if s.App == nil {
+		return nil, errors.New("app not initialised")
+	}
+	return s.App.DB.UsageStats(context.Background())
 }

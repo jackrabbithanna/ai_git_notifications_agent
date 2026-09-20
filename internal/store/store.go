@@ -330,7 +330,17 @@ type Enrichment struct {
 	LatestAuthor    string     `json:"latestAuthor"`
 	LatestBody      string     `json:"latestBody"`
 	LatestAt        *time.Time `json:"latestAt"`
+	ItemCreatedAt   *time.Time `json:"itemCreatedAt"`
 	EnrichedVersion string     `json:"enrichedVersion"` // Thread.Version() at enrichment time
+}
+
+// IsBrandNew reports whether the notification's activity is the item's creation
+// rather than a later push/update (needs enrichment; false when unknown).
+func (t Thread) IsBrandNew() bool {
+	if t.ItemCreatedAt == nil || t.EnrichedVersion == "" {
+		return false
+	}
+	return t.UpdatedAt.Sub(*t.ItemCreatedAt) < 30*time.Minute
 }
 
 // Version fingerprints the thread's GitHub/GitLab-visible state; judgments and
@@ -346,20 +356,21 @@ func (t Thread) IsRead() bool { return !t.Unread || t.LocalReadAt != nil }
 const threadColumns = `account_id, thread_id, repo, subject_type, subject_url, subject_number, html_url, title, reason, actor,
 	unread, updated_at, last_read_at, latest_comment_url, activity_kind, relation_tags, filter_verdict, filter_reason,
 	local_read_at, done_at, snoozed_until, first_seen_at, last_synced_at,
-	item_author, item_state, item_draft, item_labels, item_body, latest_author, latest_body, latest_at, enriched_version`
+	item_author, item_state, item_draft, item_labels, item_body, latest_author, latest_body, latest_at, enriched_version, item_created_at`
 
 func scanThread(sc interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var unread, draft int
 	var updated, tags, firstSeen, lastSynced, labels string
-	var lastRead, localRead, done, snoozed, latestAt sql.NullString
+	var lastRead, localRead, done, snoozed, latestAt, itemCreated sql.NullString
 	err := sc.Scan(&t.AccountID, &t.ThreadID, &t.Repo, &t.SubjectType, &t.SubjectURL, &t.SubjectNumber, &t.HTMLURL, &t.Title, &t.Reason, &t.Actor,
 		&unread, &updated, &lastRead, &t.LatestCommentURL, &t.ActivityKind, &tags, &t.FilterVerdict, &t.FilterReason,
 		&localRead, &done, &snoozed, &firstSeen, &lastSynced,
-		&t.ItemAuthor, &t.ItemState, &draft, &labels, &t.ItemBody, &t.LatestAuthor, &t.LatestBody, &latestAt, &t.EnrichedVersion)
+		&t.ItemAuthor, &t.ItemState, &draft, &labels, &t.ItemBody, &t.LatestAuthor, &t.LatestBody, &latestAt, &t.EnrichedVersion, &itemCreated)
 	if err != nil {
 		return Thread{}, err
 	}
+	t.ItemCreatedAt = parseTimePtr(itemCreated)
 	t.ItemDraft = draft != 0
 	t.ItemLabels = fromJSONStrings(labels)
 	t.LatestAt = parseTimePtr(latestAt)
@@ -388,7 +399,7 @@ func (db *DB) UpsertThread(ctx context.Context, t Thread) error {
 	}
 	_, err := db.ExecContext(ctx, `
 INSERT INTO threads (`+threadColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, '', '', 0, '[]', '', '', '', NULL, '')
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, '', '', 0, '[]', '', '', '', NULL, '', NULL)
 ON CONFLICT (account_id, thread_id) DO UPDATE SET
   repo = excluded.repo, subject_type = excluded.subject_type, subject_url = excluded.subject_url,
   subject_number = excluded.subject_number, html_url = excluded.html_url, title = excluded.title,
@@ -548,8 +559,8 @@ func (db *DB) MarkThreadsReadExcept(ctx context.Context, accountID int64, prefix
 // SetThreadEnrichment stores what the enrich step learned, tagged with the version it saw.
 func (db *DB) SetThreadEnrichment(ctx context.Context, accountID int64, threadID string, e Enrichment) error {
 	res, err := db.ExecContext(ctx, `UPDATE threads SET item_author = ?, item_state = ?, item_draft = ?, item_labels = ?, item_body = ?,
-		latest_author = ?, latest_body = ?, latest_at = ?, enriched_version = ? WHERE account_id = ? AND thread_id = ?`,
-		e.ItemAuthor, e.ItemState, boolInt(e.ItemDraft), toJSON(e.ItemLabels), e.ItemBody, e.LatestAuthor, e.LatestBody, fmtTimePtr(e.LatestAt), e.EnrichedVersion,
+		latest_author = ?, latest_body = ?, latest_at = ?, enriched_version = ?, item_created_at = ? WHERE account_id = ? AND thread_id = ?`,
+		e.ItemAuthor, e.ItemState, boolInt(e.ItemDraft), toJSON(e.ItemLabels), e.ItemBody, e.LatestAuthor, e.LatestBody, fmtTimePtr(e.LatestAt), e.EnrichedVersion, fmtTimePtr(e.ItemCreatedAt),
 		accountID, threadID)
 	if err != nil {
 		return err
@@ -696,6 +707,408 @@ func (db *DB) JudgmentStatsFor(ctx context.Context, questionsVersion string) (Ju
 		st.OutputTokens += out
 	}
 	return st, rows.Err()
+}
+
+// --- impact profiles ----------------------------------------------------------
+
+// UserProfile is a user-authored profile row (YAML kept verbatim).
+type UserProfile struct {
+	ID        string    `json:"id"`
+	YAML      string    `json:"yaml"`
+	Enabled   bool      `json:"enabled"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (db *DB) ListUserProfiles(ctx context.Context) ([]UserProfile, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, yaml, enabled, updated_at FROM profiles ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UserProfile
+	for rows.Next() {
+		var p UserProfile
+		var en int
+		var upd string
+		if err := rows.Scan(&p.ID, &p.YAML, &en, &upd); err != nil {
+			return nil, err
+		}
+		p.Enabled = en != 0
+		p.UpdatedAt = parseTime(upd)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) PutUserProfile(ctx context.Context, id, yamlSrc string, enabled bool) error {
+	_, err := db.ExecContext(ctx, `INSERT INTO profiles (id, yaml, enabled, updated_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET yaml = excluded.yaml, enabled = excluded.enabled, updated_at = excluded.updated_at`, id, yamlSrc, boolInt(enabled), fmtTime(time.Now()))
+	return err
+}
+
+func (db *DB) DeleteUserProfile(ctx context.Context, id string) error {
+	res, err := db.ExecContext(ctx, `DELETE FROM profiles WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ProfileFlags returns enabled overrides for built-in profiles (absent = enabled).
+func (db *DB) ProfileFlags(ctx context.Context) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, enabled FROM profile_flags`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		var en int
+		if err := rows.Scan(&id, &en); err != nil {
+			return nil, err
+		}
+		out[id] = en != 0
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) SetProfileEnabled(ctx context.Context, id string, enabled bool) error {
+	if res, err := db.ExecContext(ctx, `UPDATE profiles SET enabled = ? WHERE id = ?`, boolInt(enabled), id); err != nil {
+		return err
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `INSERT INTO profile_flags (id, enabled) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET enabled = excluded.enabled`, id, boolInt(enabled))
+	return err
+}
+
+// --- PR impact analyses --------------------------------------------------------
+
+// Analysis is one pull/merge request's impact analysis against a profile.
+type Analysis struct {
+	AccountID        int64           `json:"accountId"`
+	Forge            string          `json:"forge"`
+	Repo             string          `json:"repo"`
+	Number           int             `json:"number"`
+	Kind             string          `json:"kind"`
+	HeadSHA          string          `json:"headSha"`
+	ThreadVersion    string          `json:"threadVersion"`
+	ProfileID        string          `json:"profileId"`
+	Title            string          `json:"title"`
+	HTMLURL          string          `json:"htmlUrl"`
+	Author           string          `json:"author"`
+	State            string          `json:"state"`
+	MergedAt         *time.Time      `json:"mergedAt"`
+	UpdatedAt        *time.Time      `json:"updatedAt"`
+	ReportJSON       json.RawMessage `json:"report"`
+	QuestionsVersion string          `json:"questionsVersion"`
+	Provider         string          `json:"provider"`
+	Model            string          `json:"model"`
+	Calibrated       bool            `json:"calibrated"`
+	AnswersJSON      json.RawMessage `json:"answers"`
+	UsageJSON        json.RawMessage `json:"usage"`
+	ImpactLevel      int             `json:"impactLevel"` // -1 unanalysed, 0 none … 3 certain
+	ImpactScore      float64         `json:"impactScore"`
+	ChangeKind       string          `json:"changeKind"`
+	NoteJSON         json.RawMessage `json:"note"`
+	NoteModel        string          `json:"noteModel"`
+	Error            string          `json:"error"`
+	AnalysedAt       *time.Time      `json:"analysedAt"`
+	CreatedAt        time.Time       `json:"createdAt"`
+}
+
+// AnalysisKey identifies an analysis in maps.
+func AnalysisKey(accountID int64, repo string, number int) string {
+	return strconv.FormatInt(accountID, 10) + ":" + repo + "#" + strconv.Itoa(number)
+}
+
+const analysisColumns = `account_id, forge, repo, number, kind, head_sha, thread_version, profile_id, title, html_url, author, state, merged_at, updated_at,
+	report_json, questions_version, provider, model, calibrated, answers_json, usage_json, impact_level, impact_score, change_kind, note_json, note_model, error, analysed_at, created_at`
+
+func scanAnalysis(sc interface{ Scan(...any) error }) (Analysis, error) {
+	var a Analysis
+	var cal int
+	var merged, updated, analysed sql.NullString
+	var report, answers, usage, note, created string
+	if err := sc.Scan(&a.AccountID, &a.Forge, &a.Repo, &a.Number, &a.Kind, &a.HeadSHA, &a.ThreadVersion, &a.ProfileID, &a.Title, &a.HTMLURL, &a.Author, &a.State, &merged, &updated,
+		&report, &a.QuestionsVersion, &a.Provider, &a.Model, &cal, &answers, &usage, &a.ImpactLevel, &a.ImpactScore, &a.ChangeKind, &note, &a.NoteModel, &a.Error, &analysed, &created); err != nil {
+		return Analysis{}, err
+	}
+	a.Calibrated = cal != 0
+	a.MergedAt, a.UpdatedAt, a.AnalysedAt = parseTimePtr(merged), parseTimePtr(updated), parseTimePtr(analysed)
+	a.ReportJSON, a.AnswersJSON, a.UsageJSON = json.RawMessage(report), json.RawMessage(answers), json.RawMessage(usage)
+	if note != "" {
+		a.NoteJSON = json.RawMessage(note)
+	}
+	a.CreatedAt = parseTime(created)
+	return a, nil
+}
+
+func orJSON(r json.RawMessage, def string) string {
+	if len(r) == 0 {
+		return def
+	}
+	return string(r)
+}
+
+// PutAnalysis inserts or replaces the analysis row.
+func (db *DB) PutAnalysis(ctx context.Context, a Analysis) error {
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now()
+	}
+	_, err := db.ExecContext(ctx, `
+INSERT INTO pr_analysis (`+analysisColumns+`)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (account_id, repo, number) DO UPDATE SET forge = excluded.forge, kind = excluded.kind, head_sha = excluded.head_sha, thread_version = excluded.thread_version,
+  profile_id = excluded.profile_id, title = excluded.title, html_url = excluded.html_url, author = excluded.author, state = excluded.state, merged_at = excluded.merged_at,
+  updated_at = excluded.updated_at, report_json = excluded.report_json, questions_version = excluded.questions_version, provider = excluded.provider, model = excluded.model,
+  calibrated = excluded.calibrated, answers_json = excluded.answers_json, usage_json = excluded.usage_json, impact_level = excluded.impact_level, impact_score = excluded.impact_score,
+  change_kind = excluded.change_kind, note_json = excluded.note_json, note_model = excluded.note_model, error = excluded.error, analysed_at = excluded.analysed_at`,
+		a.AccountID, a.Forge, a.Repo, a.Number, a.Kind, a.HeadSHA, a.ThreadVersion, a.ProfileID, a.Title, a.HTMLURL, a.Author, a.State, fmtTimePtr(a.MergedAt), fmtTimePtr(a.UpdatedAt),
+		orJSON(a.ReportJSON, "{}"), a.QuestionsVersion, a.Provider, a.Model, boolInt(a.Calibrated), orJSON(a.AnswersJSON, "{}"), orJSON(a.UsageJSON, "{}"), a.ImpactLevel, a.ImpactScore,
+		a.ChangeKind, orJSON(a.NoteJSON, ""), a.NoteModel, a.Error, fmtTimePtr(a.AnalysedAt), fmtTime(a.CreatedAt))
+	return err
+}
+
+// SetAnalysisNote stores the generated impact note.
+func (db *DB) SetAnalysisNote(ctx context.Context, accountID int64, repo string, number int, note json.RawMessage, model string) error {
+	res, err := db.ExecContext(ctx, `UPDATE pr_analysis SET note_json = ?, note_model = ? WHERE account_id = ? AND repo = ? AND number = ?`, string(note), model, accountID, repo, number)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (db *DB) GetAnalysis(ctx context.Context, accountID int64, repo string, number int) (Analysis, error) {
+	a, err := scanAnalysis(db.QueryRowContext(ctx, `SELECT `+analysisColumns+` FROM pr_analysis WHERE account_id = ? AND repo = ? AND number = ?`, accountID, repo, number))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Analysis{}, ErrNotFound
+	}
+	return a, err
+}
+
+// AnalysisQuery filters ListAnalyses.
+type AnalysisQuery struct {
+	AccountID int64
+	MinLevel  int  // -1 includes unanalysed
+	Landed    bool // true: merged only; false: open/closed (not merged)
+	Any       bool // ignore Landed
+	Limit     int
+}
+
+// ListAnalyses returns analyses newest-first (by updated_at), filtered.
+func (db *DB) ListAnalyses(ctx context.Context, q AnalysisQuery) ([]Analysis, error) {
+	where := []string{"impact_level >= ?"}
+	args := []any{q.MinLevel}
+	if q.AccountID != 0 {
+		where = append(where, "account_id = ?")
+		args = append(args, q.AccountID)
+	}
+	if !q.Any {
+		if q.Landed {
+			where = append(where, "state = 'merged'")
+		} else {
+			where = append(where, "state <> 'merged'")
+		}
+	}
+	sqlStr := `SELECT ` + analysisColumns + ` FROM pr_analysis WHERE ` + strings.Join(where, " AND ") + ` ORDER BY impact_level DESC, COALESCE(updated_at, created_at) DESC`
+	if q.Limit > 0 {
+		sqlStr += " LIMIT " + strconv.Itoa(q.Limit)
+	}
+	rows, err := db.QueryContext(ctx, sqlStr, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Analysis
+	for rows.Next() {
+		a, err := scanAnalysis(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AnalysesByKey returns all analyses for an account (0 = all) keyed by AnalysisKey.
+func (db *DB) AnalysesByKey(ctx context.Context, accountID int64) (map[string]Analysis, error) {
+	list, err := db.ListAnalyses(ctx, AnalysisQuery{AccountID: accountID, MinLevel: -1, Any: true})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]Analysis, len(list))
+	for _, a := range list {
+		out[AnalysisKey(a.AccountID, a.Repo, a.Number)] = a
+	}
+	return out, nil
+}
+
+// --- summaries & digests (M4) ------------------------------------------------
+
+// Summary is a stored thread summary for one thread version.
+type Summary struct {
+	AccountID     int64           `json:"accountId"`
+	ThreadID      string          `json:"threadId"`
+	ThreadVersion string          `json:"threadVersion"`
+	Model         string          `json:"model"`
+	ContentJSON   json.RawMessage `json:"content"`
+	UsageJSON     json.RawMessage `json:"usage"`
+	LatencyMs     int64           `json:"latencyMs"`
+	CreatedAt     time.Time       `json:"createdAt"`
+}
+
+func (db *DB) PutSummary(ctx context.Context, s Summary) error {
+	_, err := db.ExecContext(ctx, `
+INSERT INTO summaries (account_id, thread_id, thread_version, model, content_json, usage_json, latency_ms, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (account_id, thread_id) DO UPDATE SET thread_version = excluded.thread_version, model = excluded.model, content_json = excluded.content_json,
+  usage_json = excluded.usage_json, latency_ms = excluded.latency_ms, created_at = excluded.created_at`,
+		s.AccountID, s.ThreadID, s.ThreadVersion, s.Model, orJSON(s.ContentJSON, "{}"), orJSON(s.UsageJSON, "{}"), s.LatencyMs, fmtTime(time.Now()))
+	return err
+}
+
+func scanSummary(sc interface{ Scan(...any) error }) (Summary, error) {
+	var s Summary
+	var content, usage, created string
+	if err := sc.Scan(&s.AccountID, &s.ThreadID, &s.ThreadVersion, &s.Model, &content, &usage, &s.LatencyMs, &created); err != nil {
+		return Summary{}, err
+	}
+	s.ContentJSON, s.UsageJSON, s.CreatedAt = json.RawMessage(content), json.RawMessage(usage), parseTime(created)
+	return s, nil
+}
+
+const summaryColumns = `account_id, thread_id, thread_version, model, content_json, usage_json, latency_ms, created_at`
+
+func (db *DB) GetSummary(ctx context.Context, accountID int64, threadID string) (Summary, error) {
+	s, err := scanSummary(db.QueryRowContext(ctx, `SELECT `+summaryColumns+` FROM summaries WHERE account_id = ? AND thread_id = ?`, accountID, threadID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Summary{}, ErrNotFound
+	}
+	return s, err
+}
+
+// SummariesByKey returns all summaries keyed by JudgmentKey (accountID 0 = all).
+func (db *DB) SummariesByKey(ctx context.Context, accountID int64) (map[string]Summary, error) {
+	q := `SELECT ` + summaryColumns + ` FROM summaries`
+	var args []any
+	if accountID != 0 {
+		q += " WHERE account_id = ?"
+		args = append(args, accountID)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Summary{}
+	for rows.Next() {
+		s, err := scanSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[JudgmentKey(s.AccountID, s.ThreadID)] = s
+	}
+	return out, rows.Err()
+}
+
+// Digest is a stored period overview.
+type Digest struct {
+	ID          int64           `json:"id"`
+	PeriodStart time.Time       `json:"periodStart"`
+	PeriodEnd   time.Time       `json:"periodEnd"`
+	Model       string          `json:"model"`
+	ContentJSON json.RawMessage `json:"content"`
+	UsageJSON   json.RawMessage `json:"usage"`
+	LatencyMs   int64           `json:"latencyMs"`
+	ThreadCount int             `json:"threadCount"`
+	CreatedAt   time.Time       `json:"createdAt"`
+}
+
+func (db *DB) PutDigest(ctx context.Context, d Digest) (int64, error) {
+	res, err := db.ExecContext(ctx, `INSERT INTO digests (period_start, period_end, model, content_json, usage_json, latency_ms, thread_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		fmtTime(d.PeriodStart), fmtTime(d.PeriodEnd), d.Model, orJSON(d.ContentJSON, "{}"), orJSON(d.UsageJSON, "{}"), d.LatencyMs, d.ThreadCount, fmtTime(time.Now()))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (db *DB) ListDigests(ctx context.Context, limit int) ([]Digest, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, period_start, period_end, model, content_json, usage_json, latency_ms, thread_count, created_at FROM digests ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Digest
+	for rows.Next() {
+		var d Digest
+		var ps, pe, content, usage, created string
+		if err := rows.Scan(&d.ID, &ps, &pe, &d.Model, &content, &usage, &d.LatencyMs, &d.ThreadCount, &created); err != nil {
+			return nil, err
+		}
+		d.PeriodStart, d.PeriodEnd, d.CreatedAt = parseTime(ps), parseTime(pe), parseTime(created)
+		d.ContentJSON, d.UsageJSON = json.RawMessage(content), json.RawMessage(usage)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// MarkNotified records a delivered notification; false when it was already recorded.
+func (db *DB) MarkNotified(ctx context.Context, key string) (bool, error) {
+	res, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO notified (key, created_at) VALUES (?, ?)`, key, fmtTime(time.Now()))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// UsageRow aggregates model usage for one (source, provider, model).
+type UsageRow struct {
+	Source       string  `json:"source"` // judgments | analyses | summaries | digests
+	Provider     string  `json:"provider"`
+	Model        string  `json:"model"`
+	Count        int     `json:"count"`
+	InputTokens  int64   `json:"inputTokens"`
+	OutputTokens int64   `json:"outputTokens"`
+	AvgLatencyMs float64 `json:"avgLatencyMs"`
+}
+
+// UsageStats sums token usage and latency across every stored generation.
+func (db *DB) UsageStats(ctx context.Context) ([]UsageRow, error) {
+	q := `
+SELECT 'judgments', provider, model, COUNT(*), COALESCE(SUM(json_extract(usage_json,'$.inputTokens')),0), COALESCE(SUM(json_extract(usage_json,'$.outputTokens')),0), COALESCE(AVG(latency_ms),0) FROM judgments GROUP BY provider, model
+UNION ALL
+SELECT 'analyses', provider, model, COUNT(*), COALESCE(SUM(json_extract(usage_json,'$.inputTokens')),0), COALESCE(SUM(json_extract(usage_json,'$.outputTokens')),0), 0 FROM pr_analysis WHERE impact_level >= 0 GROUP BY provider, model
+UNION ALL
+SELECT 'summaries', 'ollama', model, COUNT(*), COALESCE(SUM(json_extract(usage_json,'$.inputTokens')),0), COALESCE(SUM(json_extract(usage_json,'$.outputTokens')),0), COALESCE(AVG(latency_ms),0) FROM summaries GROUP BY model
+UNION ALL
+SELECT 'digests', 'ollama', model, COUNT(*), COALESCE(SUM(json_extract(usage_json,'$.inputTokens')),0), COALESCE(SUM(json_extract(usage_json,'$.outputTokens')),0), COALESCE(AVG(latency_ms),0) FROM digests GROUP BY model`
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UsageRow
+	for rows.Next() {
+		var r UsageRow
+		if err := rows.Scan(&r.Source, &r.Provider, &r.Model, &r.Count, &r.InputTokens, &r.OutputTokens, &r.AvgLatencyMs); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // --- watched projects (GitLab) ---------------------------------------------
@@ -852,20 +1265,21 @@ type SyncState struct {
 	MineRun         int64      `json:"mineRun"`
 	PollIntervalSec int        `json:"pollIntervalSec"`
 	LastError       string     `json:"lastError"`
+	LastLandedScan  *time.Time `json:"lastLandedScan"`
 }
 
 func (db *DB) GetSyncState(ctx context.Context, accountID int64) (SyncState, error) {
 	var s SyncState
-	var since, full, sync, mine sql.NullString
-	err := db.QueryRowContext(ctx, `SELECT account_id, last_since, last_full_at, last_sync_at, last_mine_at, mine_run, poll_interval_sec, last_error FROM sync_state WHERE account_id = ?`, accountID).
-		Scan(&s.AccountID, &since, &full, &sync, &mine, &s.MineRun, &s.PollIntervalSec, &s.LastError)
+	var since, full, sync, mine, landed sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT account_id, last_since, last_full_at, last_sync_at, last_mine_at, mine_run, poll_interval_sec, last_error, last_landed_scan_at FROM sync_state WHERE account_id = ?`, accountID).
+		Scan(&s.AccountID, &since, &full, &sync, &mine, &s.MineRun, &s.PollIntervalSec, &s.LastError, &landed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SyncState{AccountID: accountID, PollIntervalSec: 180}, nil
 	}
 	if err != nil {
 		return SyncState{}, err
 	}
-	s.LastSince, s.LastFullAt, s.LastSyncAt, s.LastMineAt = parseTimePtr(since), parseTimePtr(full), parseTimePtr(sync), parseTimePtr(mine)
+	s.LastSince, s.LastFullAt, s.LastSyncAt, s.LastMineAt, s.LastLandedScan = parseTimePtr(since), parseTimePtr(full), parseTimePtr(sync), parseTimePtr(mine), parseTimePtr(landed)
 	return s, nil
 }
 
@@ -874,12 +1288,12 @@ func (db *DB) PutSyncState(ctx context.Context, s SyncState) error {
 		s.PollIntervalSec = 180
 	}
 	_, err := db.ExecContext(ctx, `
-INSERT INTO sync_state (account_id, last_since, last_full_at, last_sync_at, last_mine_at, mine_run, poll_interval_sec, last_error)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO sync_state (account_id, last_since, last_full_at, last_sync_at, last_mine_at, mine_run, poll_interval_sec, last_error, last_landed_scan_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (account_id) DO UPDATE SET last_since = excluded.last_since, last_full_at = excluded.last_full_at,
   last_sync_at = excluded.last_sync_at, last_mine_at = excluded.last_mine_at, mine_run = excluded.mine_run,
-  poll_interval_sec = excluded.poll_interval_sec, last_error = excluded.last_error`,
-		s.AccountID, fmtTimePtr(s.LastSince), fmtTimePtr(s.LastFullAt), fmtTimePtr(s.LastSyncAt), fmtTimePtr(s.LastMineAt), s.MineRun, s.PollIntervalSec, s.LastError)
+  poll_interval_sec = excluded.poll_interval_sec, last_error = excluded.last_error, last_landed_scan_at = excluded.last_landed_scan_at`,
+		s.AccountID, fmtTimePtr(s.LastSince), fmtTimePtr(s.LastFullAt), fmtTimePtr(s.LastSyncAt), fmtTimePtr(s.LastMineAt), s.MineRun, s.PollIntervalSec, s.LastError, fmtTimePtr(s.LastLandedScan))
 	return err
 }
 
