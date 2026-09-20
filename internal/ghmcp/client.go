@@ -193,7 +193,7 @@ func (c *Client) spawn(ctx context.Context) (session, error) {
 	} else {
 		cmd.Stderr = io.Discard
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "ghinbox", Version: "0.1.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "gitinbox", Version: "0.1.0"}, nil)
 	sess, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ghmcp: start %s: %w", c.cfg.BinaryPath, err)

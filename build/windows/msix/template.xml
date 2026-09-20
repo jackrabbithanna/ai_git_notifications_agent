@@ -8,15 +8,15 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="ghinbox"
+        Path="gitinbox"
         Arguments=""
-        InstallLocation="C:\Program Files\ghinbox\GH Inbox">
+        InstallLocation="C:\Program Files\gitinbox\GitInbox">
     </Installer>
     <PackageInformation
-        PackageName="GH Inbox"
-        PackageDisplayName="GH Inbox"
-        PublisherName="CN=ghinbox"
-        PublisherDisplayName="ghinbox"
+        PackageName="GitInbox"
+        PackageDisplayName="GitInbox"
+        PublisherName="CN=gitinbox"
+        PublisherDisplayName="gitinbox"
         Version="0.1.0.0"
         PackageDescription="AI-triaged GitHub notifications dashboard">
         <Capabilities>
@@ -25,10 +25,10 @@
         </Capabilities>
         <Applications>
             <Application
-                Id="com.ghinbox.app"
+                Id="com.gitinbox.app"
                 Description="AI-triaged GitHub notifications dashboard"
-                DisplayName="GH Inbox"
-                ExecutableName="ghinbox"
+                DisplayName="GitInbox"
+                ExecutableName="gitinbox"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -41,13 +41,13 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>GH Inbox</DisplayName>
-            <PublisherDisplayName>ghinbox</PublisherDisplayName>
+            <DisplayName>GitInbox</DisplayName>
+            <PublisherDisplayName>gitinbox</PublisherDisplayName>
             <Description>AI-triaged GitHub notifications dashboard</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="ghinbox.msix" />
+    <SaveLocation PackagePath="gitinbox.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

@@ -19,9 +19,9 @@ Unicode true
 ####
 ## The following information is taken from the wails_tools.nsh file, but they can be overwritten here.
 ####
-## !define INFO_PROJECTNAME    "my-project" # Default "ghinbox"
-## !define INFO_COMPANYNAME    "My Company" # Default "ghinbox"
-## !define INFO_PRODUCTNAME    "My Product Name" # Default "GH Inbox"
+## !define INFO_PROJECTNAME    "my-project" # Default "gitinbox"
+## !define INFO_COMPANYNAME    "My Company" # Default "gitinbox"
+## !define INFO_PRODUCTNAME    "My Product Name" # Default "GitInbox"
 ## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.1.0"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026"
 ###

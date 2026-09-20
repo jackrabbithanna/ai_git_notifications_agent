@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { JudgeService, ProseService } from "../../bindings/ghinbox/internal/services";
-import type { SummaryView } from "../../bindings/ghinbox/internal/pipeline";
-import type { Explanation } from "../../bindings/ghinbox/internal/pipeline";
-import type { Answer } from "../../bindings/ghinbox/internal/judge";
+import { JudgeService, ProseService } from "../../bindings/gitinbox/internal/services";
+import type { SummaryView } from "../../bindings/gitinbox/internal/pipeline";
+import type { Explanation } from "../../bindings/gitinbox/internal/pipeline";
+import type { Answer } from "../../bindings/gitinbox/internal/judge";
 import { fmtDateTime } from "../lib/format";
+import { ImpactDetails, levelName } from "./Impact";
 import { Button, Chip, ErrorText, errMsg } from "../lib/ui";
 
 // Explain panel: the judge's answers with probabilities, the state it saw, and
@@ -128,6 +129,14 @@ export default function Explain({ accountId, threadId, onChanged }: { accountId:
             })}
           </tbody>
         </table>
+      )}
+      {ex.impact && (
+        <div className="mt-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+            Impact analysis · {levelName(ex.impact.analysis.impactLevel)} · {ex.impact.analysis.changeKind.replace(/_/g, " ")} · profile {ex.impact.analysis.profileId}
+          </div>
+          <ImpactDetails v={ex.impact} onChanged={() => { load(false); onChanged(); }} />
+        </div>
       )}
       {showState && (
         <pre className="mt-2 max-h-72 overflow-auto rounded bg-white p-2 font-mono text-[11px] dark:bg-neutral-900">{JSON.stringify(ex.state, null, 2)}</pre>

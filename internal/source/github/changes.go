@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"ghinbox/internal/profiles"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/profiles"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // Changes fetches a pull request (pull_request_read get) and its files

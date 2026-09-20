@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Events } from "@wailsio/runtime";
-import { AccountsService } from "../bindings/ghinbox/internal/services";
-import type { Account } from "../bindings/ghinbox/internal/store";
+import { AccountsService } from "../bindings/gitinbox/internal/services";
+import type { Account } from "../bindings/gitinbox/internal/store";
 import Inbox from "./views/Inbox";
 import Mine from "./views/Mine";
 import Settings from "./views/Settings";
@@ -9,8 +9,9 @@ import Diagnostics from "./views/Diagnostics";
 import Impact from "./views/Impact";
 import Profiles from "./views/Profiles";
 import Digest from "./views/Digest";
+import Eval from "./views/Eval";
 
-const VIEWS = ["Inbox", "Mine", "Impact", "Digest", "Profiles", "Settings", "Diagnostics"] as const;
+const VIEWS = ["Inbox", "Mine", "Impact", "Digest", "Eval", "Profiles", "Settings", "Diagnostics"] as const;
 type View = (typeof VIEWS)[number];
 
 // Planned views not yet implemented (see PLAN.md milestones).
@@ -41,6 +42,7 @@ function App() {
     const offImpact = Events.On("impact:updated", () => setRefreshKey((k) => k + 1));
     const offSummary = Events.On("summary:updated", () => setRefreshKey((k) => k + 1));
     const offDigest = Events.On("digest:updated", () => setRefreshKey((k) => k + 1));
+    const offLabels = Events.On("labels:updated", () => setRefreshKey((k) => k + 1));
     return () => {
       offUpdated();
       offErr();
@@ -49,6 +51,7 @@ function App() {
       offImpact();
       offSummary();
       offDigest();
+      offLabels();
     };
   }, [loadAccounts]);
 
@@ -59,7 +62,7 @@ function App() {
   return (
     <div className="flex min-h-screen">
       <nav className="flex w-48 shrink-0 flex-col border-r border-neutral-200 p-4 dark:border-neutral-800">
-        <h1 className="mb-6 text-lg font-semibold tracking-tight">GH Inbox</h1>
+        <h1 className="mb-6 text-lg font-semibold tracking-tight">GitInbox</h1>
         <ul className="space-y-1">
           {VIEWS.map((v) => (
             <li key={v}>
@@ -115,6 +118,7 @@ function App() {
         {view === "Mine" && <Mine refreshKey={refreshKey} accountId={accountId || accounts[0]?.id || 0} accounts={accounts} />}
         {view === "Impact" && <Impact refreshKey={refreshKey} accountId={accountId} accounts={accounts} />}
         {view === "Digest" && <Digest refreshKey={refreshKey} />}
+        {view === "Eval" && <Eval refreshKey={refreshKey} accountId={accountId} accounts={accounts} />}
         {view === "Profiles" && <Profiles />}
         {view === "Settings" && <Settings onAccountsChanged={loadAccounts} />}
         {view === "Diagnostics" && <Diagnostics accounts={accounts} />}

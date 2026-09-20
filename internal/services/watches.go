@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/store"
+	"gitinbox/internal/app"
+	"gitinbox/internal/store"
 )
 
 // WatchesService manages the GitLab projects whose activity an account polls.

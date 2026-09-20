@@ -4,15 +4,15 @@
         <key>CFBundlePackageType</key>
             <string>APPL</string>
         <key>CFBundleName</key>
-            <string>GH Inbox</string>
+            <string>GitInbox</string>
         <key>CFBundleExecutable</key>
-            <string>ghinbox</string>
+            <string>gitinbox</string>
         <key>CFBundleIdentifier</key>
-            <string>com.ghinbox.app</string>
+            <string>com.gitinbox.app</string>
         <key>CFBundleVersion</key>
             <string>0.1.0</string>
         <key>CFBundleGetInfoString</key>
-            <string>(c) 2026 ghinbox</string>
+            <string>(c) 2026 gitinbox</string>
         <key>CFBundleShortVersionString</key>
             <string>0.1.0</string>
         <key>CFBundleIconFile</key>

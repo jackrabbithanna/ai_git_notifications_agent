@@ -1,4 +1,4 @@
-module ghinbox
+module gitinbox
 
 go 1.26.0
 

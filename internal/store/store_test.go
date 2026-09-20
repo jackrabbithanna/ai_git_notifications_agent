@@ -426,3 +426,42 @@ func TestProseTables(t *testing.T) {
 		t.Fatalf("usage: %+v", rows)
 	}
 }
+
+func TestLabelsAndEval(t *testing.T) {
+	db := openTest(t)
+	ctx := context.Background()
+	a, _ := db.InsertAccount(ctx, ForgeGitHub, "me", "")
+	yes, no := true, false
+	if err := db.PutLabel(ctx, Label{AccountID: a.ID, ThreadID: "t", Category: "needs_my_reply", RequiresAction: &yes, Urgency: 2, Relevance: -1, Priority: 3, Resolved: &no, Note: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	l, err := db.GetLabel(ctx, a.ID, "t")
+	if err != nil || l.Category != "needs_my_reply" || l.RequiresAction == nil || !*l.RequiresAction || l.Relevance != -1 || l.Priority != 3 || l.Resolved == nil || *l.Resolved || l.Noise != nil {
+		t.Fatalf("label: %+v %v", l, err)
+	}
+	if m, _ := db.ListLabels(ctx, 0); len(m) != 1 {
+		t.Fatalf("list labels: %v", m)
+	}
+	if err := db.PutPRLabel(ctx, PRLabel{AccountID: a.ID, Repo: "o/r", Number: 5, ImpactLevel: 3, ChangeKind: "api_change"}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := db.ListPRLabels(ctx); m[AnalysisKey(a.ID, "o/r", 5)].ImpactLevel != 3 {
+		t.Fatalf("pr labels: %v", m)
+	}
+	if err := db.PutEvalJudgment(ctx, EvalJudgment{AccountID: a.ID, ThreadID: "t", Provider: "ollama", Model: "q", ThreadVersion: "v", AnswersJSON: json.RawMessage(`{"a":1}`), LatencyMs: 7}); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := db.ListEvalJudgments(ctx, "ollama")
+	if j := m[JudgmentKey(a.ID, "t")]; j.Model != "q" || string(j.AnswersJSON) != `{"a":1}` {
+		t.Fatalf("eval judgments: %+v", m)
+	}
+	if prov, _ := db.EvalProviders(ctx); prov["ollama"] != 1 {
+		t.Fatalf("providers: %v", prov)
+	}
+	if err := db.DeleteLabel(ctx, a.ID, "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetLabel(ctx, a.ID, "t"); err != ErrNotFound {
+		t.Fatalf("delete: %v", err)
+	}
+}

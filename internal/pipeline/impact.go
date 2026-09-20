@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"ghinbox/internal/judge"
-	"ghinbox/internal/llm"
-	llmollama "ghinbox/internal/llm/ollama"
-	"ghinbox/internal/profiles"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/judge"
+	"gitinbox/internal/llm"
+	llmollama "gitinbox/internal/llm/ollama"
+	"gitinbox/internal/profiles"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // Settings key and events for the impact step.
@@ -567,16 +567,37 @@ func (p *Pipeline) ListImpact(ctx context.Context, q store.AnalysisQuery) ([]Imp
 	}
 	out := make([]ImpactView, 0, len(list))
 	for _, a := range list {
-		v := ImpactView{Analysis: a}
-		_ = json.Unmarshal(a.ReportJSON, &v.Report)
-		_ = json.Unmarshal(a.AnswersJSON, &v.Answers)
-		if len(a.NoteJSON) > 0 {
-			var n llm.ImpactNote
-			if json.Unmarshal(a.NoteJSON, &n) == nil {
-				v.Note = &n
-			}
-		}
-		out = append(out, v)
+		out = append(out, impactViewOf(a))
 	}
 	return out, nil
+}
+
+// GetImpact returns the analysis view for one PR/MR, or nil when not analysed.
+func (p *Pipeline) GetImpact(ctx context.Context, accountID int64, repo string, number int) (*ImpactView, error) {
+	a, err := p.deps.DB.GetAnalysis(ctx, accountID, repo, number)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if a.ImpactLevel < 0 && a.Error == "" {
+		return nil, nil
+	}
+	v := impactViewOf(a)
+	return &v, nil
+}
+
+// impactViewOf decodes an analysis row for the UI.
+func impactViewOf(a store.Analysis) ImpactView {
+	v := ImpactView{Analysis: a}
+	_ = json.Unmarshal(a.ReportJSON, &v.Report)
+	_ = json.Unmarshal(a.AnswersJSON, &v.Answers)
+	if len(a.NoteJSON) > 0 {
+		var n llm.ImpactNote
+		if json.Unmarshal(a.NoteJSON, &n) == nil {
+			v.Note = &n
+		}
+	}
+	return v
 }

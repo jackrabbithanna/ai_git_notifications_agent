@@ -5,11 +5,11 @@
 	"info": {
 		"0000": {
 			"ProductVersion": "0.1.0",
-			"CompanyName": "ghinbox",
+			"CompanyName": "gitinbox",
 			"FileDescription": "AI-triaged GitHub notifications dashboard",
 			"LegalCopyright": "© 2026",
-			"ProductName": "GH Inbox",
-			"Comments": "(c) 2026 ghinbox"
+			"ProductName": "GitInbox",
+			"Comments": "(c) 2026 gitinbox"
 		}
 	}
 }

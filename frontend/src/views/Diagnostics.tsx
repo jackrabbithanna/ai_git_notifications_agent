@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { DiagnosticsService, JudgeService } from "../../bindings/ghinbox/internal/services";
-import type { Environment, JudgeStatus, MCPServerInfo } from "../../bindings/ghinbox/internal/services";
-import type { Stats, ToolInfo } from "../../bindings/ghinbox/internal/ghmcp";
-import type { Account, UsageRow } from "../../bindings/ghinbox/internal/store";
+import { DiagnosticsService, JudgeService } from "../../bindings/gitinbox/internal/services";
+import type { Environment, JudgeStatus, MCPServerInfo } from "../../bindings/gitinbox/internal/services";
+import type { Stats, ToolInfo } from "../../bindings/gitinbox/internal/ghmcp";
+import type { Account, UsageRow } from "../../bindings/gitinbox/internal/store";
 import { fmtDateTime } from "../lib/format";
 import { Button, Card, Chip, ErrorText, errMsg } from "../lib/ui";
 

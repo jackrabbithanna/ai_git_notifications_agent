@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=ghinbox
-Exec=ghinbox
-Icon=ghinbox
+Name=gitinbox
+Exec=gitinbox
+Icon=gitinbox
 Categories=Development;
 Terminal=false
 Keywords=wails

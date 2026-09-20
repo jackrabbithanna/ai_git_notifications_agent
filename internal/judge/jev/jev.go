@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"time"
 
-	"ghinbox/internal/judge"
+	"gitinbox/internal/judge"
 )
 
 const (

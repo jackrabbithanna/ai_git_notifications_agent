@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"ghinbox/internal/judge"
+	"gitinbox/internal/judge"
 )
 
 func answers(action, resolved float64, cat string, conf float64, urg, rel float64) map[string]judge.Answer {

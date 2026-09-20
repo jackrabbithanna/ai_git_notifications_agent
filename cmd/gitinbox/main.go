@@ -1,8 +1,8 @@
-// Command ghinbox is the headless companion to the GH Inbox desktop app. It
+// Command gitinbox is the headless companion to the GitInbox desktop app. It
 // shares the app's database, secrets and pipeline, so it can add accounts,
 // sync, and inspect the inbox from a terminal (handy on a Pi over SSH).
 //
-// Flags must precede positional arguments: ghinbox sync --account octocat --full
+// Flags must precede positional arguments: gitinbox sync --account octocat --full
 package main
 
 import (
@@ -15,17 +15,18 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"ghinbox/internal/mcpbin"
-	"ghinbox/internal/pipeline"
-	"ghinbox/internal/secrets"
-	gitlabsrc "ghinbox/internal/source/gitlab"
-	"ghinbox/internal/store"
+	"gitinbox/internal/mcpbin"
+	"gitinbox/internal/pipeline"
+	"gitinbox/internal/secrets"
+	gitlabsrc "gitinbox/internal/source/gitlab"
+	"gitinbox/internal/store"
 )
 
 func main() {
@@ -43,7 +44,7 @@ func main() {
 		if !ok {
 			v = "none"
 		}
-		fmt.Printf("ghinbox 0.1.0 (M1); bundled github-mcp-server: %s\n", v)
+		fmt.Printf("gitinbox 0.1.0 (M1); bundled github-mcp-server: %s\n", v)
 	case "mcp":
 		err = cmdMCP(ctx, os.Args[2:])
 	case "account":
@@ -76,6 +77,8 @@ func main() {
 		err = cmdDigest(ctx, os.Args[2:])
 	case "usage":
 		err = cmdUsage(ctx)
+	case "eval":
+		err = cmdEval(ctx, os.Args[2:])
 	case "read", "done", "snooze", "undone":
 		err = cmdAction(ctx, os.Args[1], os.Args[2:])
 	case "help", "-h", "--help":
@@ -91,7 +94,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: ghinbox <command> [flags] [args]
+	fmt.Fprint(os.Stderr, `usage: gitinbox <command> [flags] [args]
 
   mcp path                                   locate the github-mcp-server binary
   mcp tools [--account L]                    list the server's tools (read-only unless account write mode says otherwise)
@@ -120,11 +123,18 @@ func usage() {
   summarize --top N                          summarise the N highest-priority threads lacking a summary
   digest [--hours 24] [--generate]           show the latest digest, or generate one for the period
   usage                                      token usage and latency per provider/model
+  eval queue [--account L] [--limit N]       threads to label (unlabeled, judged first)
+  eval label [--account L] THREAD_ID KEY=VALUE…   keys: category requires_action urgency relevance priority resolved noise note
+  eval pr-label [--account L] REPO#N impact=0-3 [kind=…]
+  eval judge --provider jev|ollama [--model M] [--force]   re-judge the labeled set for comparison
+  eval report [--out DIR]                    metrics per provider (+ writes Markdown; default eval/ in the repo)
+  eval tune [--iters N] [--apply]            search weights that maximise NDCG@25 on your labels
+  eval export FILE | eval import FILE        labels as JSON lines
   read|done|undone [--account L] THREAD_ID   local triage state (mirrored to GitHub only in write mode 'notifications')
   snooze [--account L] --for 2h THREAD_ID
   version
 
-env: GHINBOX_DB (database path), GHINBOX_MCP_PATH (server binary override), GHINBOX_DEBUG=1 (server stderr + debug logs)
+env: GITINBOX_DB (database path), GITINBOX_MCP_PATH (server binary override), GITINBOX_DEBUG=1 (server stderr + debug logs)
 `)
 }
 
@@ -138,12 +148,17 @@ type env struct {
 }
 
 func openEnv(needMCP bool) (*env, error) {
-	path := os.Getenv("GHINBOX_DB")
+	path := os.Getenv("GITINBOX_DB")
 	if path == "" {
 		var err error
 		if path, err = store.DefaultPath(); err != nil {
 			return nil, err
 		}
+	}
+	if moved, err := store.MigrateLegacyDataDir(path); err != nil {
+		return nil, fmt.Errorf("migrate legacy data dir: %w", err)
+	} else if moved {
+		fmt.Fprintf(os.Stderr, "migrated data directory from ghinbox to %s\n", filepath.Dir(path))
 	}
 	db, err := store.Open(path)
 	if err != nil {
@@ -152,13 +167,13 @@ func openEnv(needMCP bool) (*env, error) {
 	e := &env{db: db, sec: secrets.Open()}
 	level := slog.LevelWarn
 	var serverLog io.Writer = io.Discard
-	if os.Getenv("GHINBOX_DEBUG") != "" {
+	if os.Getenv("GITINBOX_DEBUG") != "" {
 		level = slog.LevelDebug
 		serverLog = os.Stderr
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	if needMCP {
-		info, err := mcpbin.Locate(mcpbin.Options{OverridePath: os.Getenv("GHINBOX_MCP_PATH")})
+		info, err := mcpbin.Locate(mcpbin.Options{OverridePath: os.Getenv("GITINBOX_MCP_PATH")})
 		if err != nil {
 			db.Close()
 			return nil, err
@@ -187,7 +202,7 @@ func (e *env) account(ctx context.Context, login string) (store.Account, error) 
 	if login == "" {
 		switch len(accts) {
 		case 0:
-			return store.Account{}, errors.New("no accounts configured; run: ghinbox account add --token-file <file>")
+			return store.Account{}, errors.New("no accounts configured; run: gitinbox account add --token-file <file>")
 		case 1:
 			return accts[0], nil
 		default:
@@ -207,7 +222,7 @@ func (e *env) account(ctx context.Context, login string) (store.Account, error) 
 	}
 	switch len(matches) {
 	case 0:
-		return store.Account{}, fmt.Errorf("unknown account %q (use LOGIN@HOST or the id from `ghinbox account list`)", login)
+		return store.Account{}, fmt.Errorf("unknown account %q (use LOGIN@HOST or the id from `gitinbox account list`)", login)
 	case 1:
 		return matches[0], nil
 	}
@@ -232,7 +247,7 @@ func cmdMCP(ctx context.Context, args []string) error {
 	}
 	switch args[0] {
 	case "path":
-		info, err := mcpbin.Locate(mcpbin.Options{OverridePath: os.Getenv("GHINBOX_MCP_PATH")})
+		info, err := mcpbin.Locate(mcpbin.Options{OverridePath: os.Getenv("GITINBOX_MCP_PATH")})
 		if err != nil {
 			return err
 		}
@@ -716,7 +731,7 @@ func cmdExplain(ctx context.Context, args []string) error {
 		fmt.Println("  (not enriched)")
 	}
 	if ex.Judgment == nil {
-		fmt.Println("  no judgment stored (run: ghinbox judge, or explain --now)")
+		fmt.Println("  no judgment stored (run: gitinbox judge, or explain --now)")
 	} else {
 		stale := ""
 		if ex.Stale {
@@ -1207,7 +1222,7 @@ func cmdDigest(ctx context.Context, args []string) error {
 			return err
 		}
 		if len(ds) == 0 {
-			return errors.New("no digest yet; run: ghinbox digest --generate")
+			return errors.New("no digest yet; run: gitinbox digest --generate")
 		}
 		v = ds[0]
 		fmt.Printf("digest #%d for %s → %s (%s, %d threads)\n", v.Digest.ID, v.Digest.PeriodStart.Local().Format("Jan 02 15:04"), v.Digest.PeriodEnd.Local().Format("Jan 02 15:04"), v.Digest.Model, v.Digest.ThreadCount)
@@ -1245,6 +1260,181 @@ func cmdUsage(ctx context.Context) error {
 	}
 	w.Flush()
 	return nil
+}
+
+func cmdEval(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("eval: want queue|label|pr-label|judge|report|tune|export|import")
+	}
+	sub := args[0]
+	fs, login := newFlags("eval " + sub)
+	limit := fs.Int("limit", 30, "max items")
+	provider := fs.String("provider", "", "jev or ollama")
+	model := fs.String("model", "", "model override")
+	force := fs.Bool("force", false, "re-judge even if already judged at this version")
+	iters := fs.Int("iters", 400, "tuning iterations")
+	apply := fs.Bool("apply", false, "store the tuned weights")
+	out := fs.String("out", "eval", "report directory")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	e, err := openEnv(sub == "judge" || sub == "label")
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	switch sub {
+	case "queue":
+		var acctID int64
+		if *login != "" {
+			acct, err := e.account(ctx, *login)
+			if err != nil {
+				return err
+			}
+			acctID = acct.ID
+		}
+		items, err := e.pipe.LabelQueue(ctx, acctID, *limit, false)
+		if err != nil {
+			return err
+		}
+		for _, it := range items {
+			t := it.Thread
+			cat := ""
+			if it.Score.Judged {
+				cat = " judged:" + it.Score.Category
+			}
+			fmt.Printf("%3d%%%-28s %-12s %-26s #%-6d %s  (%s, %s)\n", it.Score.Percent, cat, t.ThreadID, trunc(t.Repo, 26), t.SubjectNumber, trunc(t.Title, 60), t.ActivityKind, t.Reason)
+		}
+		fmt.Printf("%d to label\n", len(items))
+		return nil
+	case "label":
+		if fs.NArg() < 2 {
+			return errors.New("eval label: want THREAD_ID KEY=VALUE…")
+		}
+		acct, err := e.account(ctx, *login)
+		if err != nil {
+			return err
+		}
+		l, err := e.db.GetLabel(ctx, acct.ID, fs.Arg(0))
+		if err != nil {
+			l = store.Label{AccountID: acct.ID, ThreadID: fs.Arg(0), Urgency: -1, Relevance: -1, Priority: -1}
+		}
+		for _, kv := range fs.Args()[1:] {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok {
+				return fmt.Errorf("want KEY=VALUE, got %q", kv)
+			}
+			b := v == "y" || v == "yes" || v == "true" || v == "1"
+			switch k {
+			case "category":
+				l.Category = v
+			case "requires_action", "action":
+				l.RequiresAction = &b
+			case "resolved":
+				l.Resolved = &b
+			case "noise":
+				l.Noise = &b
+			case "note":
+				l.Note = v
+			case "urgency":
+				fmt.Sscanf(v, "%d", &l.Urgency)
+			case "relevance":
+				fmt.Sscanf(v, "%d", &l.Relevance)
+			case "priority":
+				fmt.Sscanf(v, "%d", &l.Priority)
+			default:
+				return fmt.Errorf("unknown label key %q", k)
+			}
+		}
+		if err := e.pipe.SetLabel(ctx, l); err != nil {
+			return err
+		}
+		fmt.Printf("labeled %s\n", fs.Arg(0))
+		return nil
+	case "pr-label":
+		if fs.NArg() < 2 {
+			return errors.New("eval pr-label: want REPO#N impact=0-3 [kind=…]")
+		}
+		acct, err := e.account(ctx, *login)
+		if err != nil {
+			return err
+		}
+		repo, num, err := parseRef(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		l := store.PRLabel{AccountID: acct.ID, Repo: repo, Number: num, ImpactLevel: -1}
+		for _, kv := range fs.Args()[1:] {
+			k, v, _ := strings.Cut(kv, "=")
+			switch k {
+			case "impact":
+				fmt.Sscanf(v, "%d", &l.ImpactLevel)
+			case "kind":
+				l.ChangeKind = v
+			case "note":
+				l.Note = v
+			}
+		}
+		return e.pipe.SetPRLabel(ctx, l)
+	case "judge":
+		if *provider == "" {
+			return errors.New("eval judge: --provider jev|ollama is required")
+		}
+		rep, err := e.pipe.EvalJudge(ctx, *provider, *model, *force)
+		fmt.Printf("%s %s: labeled %d, judged %d, skipped %d, failed %d, tokens %d/%d in %s\n", rep.Provider, rep.Model, rep.Labeled, rep.Judged, rep.Skipped, rep.Failed, rep.Usage.InputTokens, rep.Usage.OutputTokens, rep.Duration.Round(time.Second))
+		for _, m := range rep.Errors {
+			fmt.Println("  -", m)
+		}
+		return err
+	case "report":
+		path, err := e.pipe.WriteReport(ctx, *out)
+		if err != nil {
+			return err
+		}
+		md, _ := os.ReadFile(path)
+		fmt.Print(string(md))
+		fmt.Printf("\n(written to %s)\n", path)
+		return nil
+	case "tune":
+		res, err := e.pipe.Tune(ctx, *iters, *apply)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("labeled %d · objective %.3f → %.3f after %d iterations\n", res.Labeled, res.NDCGFrom, res.NDCGTo, res.Iters)
+		fmt.Printf("action %.2f→%.2f  urgency %.2f→%.2f  relevance %.2f→%.2f  recency %.2f→%.2f (half-life %.0fh→%.0fh)  resolved %.2f→%.2f (thr %.2f→%.2f)  impact %.2f→%.2f  uncal %.2f→%.2f\n",
+			res.Before.Action, res.After.Action, res.Before.Urgency, res.After.Urgency, res.Before.Relevance, res.After.Relevance, res.Before.Recency, res.After.Recency,
+			res.Before.RecencyHalfLifeH, res.After.RecencyHalfLifeH, res.Before.Resolved, res.After.Resolved, res.Before.ResolvedThreshold, res.After.ResolvedThreshold,
+			res.Before.Impact, res.After.Impact, res.Before.UncalibratedDiscount, res.After.UncalibratedDiscount)
+		if *apply {
+			fmt.Println("applied" + map[bool]string{true: "", false: " (no improvement; weights unchanged)"}[res.NDCGTo > res.NDCGFrom])
+		}
+		return nil
+	case "export":
+		if fs.NArg() < 1 {
+			return errors.New("eval export: want FILE")
+		}
+		f, err := os.Create(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		n, err := e.pipe.ExportLabels(ctx, f)
+		fmt.Printf("exported %d labels\n", n)
+		return err
+	case "import":
+		if fs.NArg() < 1 {
+			return errors.New("eval import: want FILE")
+		}
+		f, err := os.Open(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		n, err := e.pipe.ImportLabels(ctx, f)
+		fmt.Printf("imported %d labels\n", n)
+		return err
+	}
+	return fmt.Errorf("eval: unknown subcommand %q", sub)
 }
 
 func cmdAction(ctx context.Context, action string, args []string) error {

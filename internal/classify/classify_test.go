@@ -3,7 +3,7 @@ package classify
 import (
 	"testing"
 
-	"ghinbox/internal/ghmcp"
+	"gitinbox/internal/ghmcp"
 )
 
 func n(reason, subjectType, subjectURL, latest string) ghmcp.Notification {

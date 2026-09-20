@@ -5,10 +5,10 @@ import (
 	"sort"
 	"time"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/pipeline"
-	"ghinbox/internal/scoring"
-	"ghinbox/internal/store"
+	"gitinbox/internal/app"
+	"gitinbox/internal/pipeline"
+	"gitinbox/internal/scoring"
+	"gitinbox/internal/store"
 )
 
 // InboxService serves the Inbox view and local triage actions.

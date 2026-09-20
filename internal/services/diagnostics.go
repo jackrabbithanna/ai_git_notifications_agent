@@ -5,11 +5,11 @@ import (
 	"context"
 	"errors"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/filter"
-	"ghinbox/internal/ghmcp"
-	"ghinbox/internal/mcpbin"
-	"ghinbox/internal/store"
+	"gitinbox/internal/app"
+	"gitinbox/internal/filter"
+	"gitinbox/internal/ghmcp"
+	"gitinbox/internal/mcpbin"
+	"gitinbox/internal/store"
 )
 
 // DiagnosticsService exposes environment checks to the Diagnostics view.

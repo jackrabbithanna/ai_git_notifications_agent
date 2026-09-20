@@ -50,11 +50,11 @@ jobs:
 
       - name: Smoke-test CLI
         run: |
-          go build -o bin/ghinbox-cli ./cmd/ghinbox
-          ./bin/ghinbox-cli mcp path
+          go build -o bin/gitinbox-cli ./cmd/gitinbox
+          ./bin/gitinbox-cli mcp path
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ghinbox-linux-${{ matrix.arch }}
-          path: bin/ghinbox
+          name: gitinbox-linux-${{ matrix.arch }}
+          path: bin/gitinbox
           if-no-files-found: error

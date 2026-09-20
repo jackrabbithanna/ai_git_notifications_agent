@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"ghinbox/internal/classify"
+	"gitinbox/internal/classify"
 )
 
 // Key is the settings key holding Rules as JSON.

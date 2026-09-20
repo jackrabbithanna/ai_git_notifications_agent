@@ -1,13 +1,13 @@
 [Desktop Entry]
 Version=1.0
-Name=GH Inbox
+Name=GitInbox
 Comment=AI-triaged GitHub notifications dashboard
 # The Exec line includes %u to pass the URL to the application
-Exec=/usr/local/bin/ghinbox %u
+Exec=/usr/local/bin/gitinbox %u
 Terminal=false
 Type=Application
-Icon=ghinbox
+Icon=gitinbox
 Categories=Utility;
-StartupWMClass=ghinbox
+StartupWMClass=gitinbox
 
  

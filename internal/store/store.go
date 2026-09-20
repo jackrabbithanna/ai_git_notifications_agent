@@ -29,7 +29,7 @@ type DB struct {
 	*sql.DB
 }
 
-// DefaultPath is $XDG_DATA_HOME/ghinbox/ghinbox.db (or ~/.local/share/...).
+// DefaultPath is $XDG_DATA_HOME/gitinbox/gitinbox.db (or ~/.local/share/...).
 func DefaultPath() (string, error) {
 	base := os.Getenv("XDG_DATA_HOME")
 	if base == "" {
@@ -39,7 +39,42 @@ func DefaultPath() (string, error) {
 		}
 		base = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(base, "ghinbox", "ghinbox.db"), nil
+	return filepath.Join(base, "gitinbox", "gitinbox.db"), nil
+}
+
+// legacyAppName is the pre-rename data directory / file prefix.
+const legacyAppName = "ghinbox"
+
+// MigrateLegacyDataDir moves a pre-rename data directory (…/ghinbox with
+// ghinbox.db) to the new location the first time the renamed app runs.
+// Returns true when a migration happened.
+func MigrateLegacyDataDir(newPath string) (bool, error) {
+	newDir := filepath.Dir(newPath)
+	if _, err := os.Stat(newDir); err == nil {
+		return false, nil // already migrated or fresh install started
+	}
+	oldDir := filepath.Join(filepath.Dir(newDir), legacyAppName)
+	if st, err := os.Stat(oldDir); err != nil || !st.IsDir() {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.Rename(oldDir, newDir); err != nil {
+		return false, fmt.Errorf("move %s → %s: %w", oldDir, newDir, err)
+	}
+	// Rename the database (and its WAL/SHM sidecars) and the log to the new prefix.
+	newBase := strings.TrimSuffix(filepath.Base(newPath), ".db")
+	for _, suffix := range []string{".db", ".db-wal", ".db-shm", ".log"} {
+		from := filepath.Join(newDir, legacyAppName+suffix)
+		to := filepath.Join(newDir, newBase+suffix)
+		if _, err := os.Stat(from); err == nil {
+			if err := os.Rename(from, to); err != nil {
+				return true, err
+			}
+		}
+	}
+	return true, nil
 }
 
 // Open opens (creating if needed) the database and applies pending migrations.
@@ -1107,6 +1142,202 @@ SELECT 'digests', 'ollama', model, COUNT(*), COALESCE(SUM(json_extract(usage_jso
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// --- labels & evaluation (M5) ------------------------------------------------
+
+// Label is the user's ground truth for one thread. Pointer/−1 fields are "unset".
+type Label struct {
+	AccountID      int64     `json:"accountId"`
+	ThreadID       string    `json:"threadId"`
+	Category       string    `json:"category"`
+	RequiresAction *bool     `json:"requiresAction"`
+	Urgency        int       `json:"urgency"`
+	Relevance      int       `json:"relevance"`
+	Priority       int       `json:"priority"`
+	Resolved       *bool     `json:"resolved"`
+	Noise          *bool     `json:"noise"`
+	Note           string    `json:"note"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+func nullBool(b *bool) any {
+	if b == nil {
+		return nil
+	}
+	return boolInt(*b)
+}
+
+func boolPtr(n sql.NullInt64) *bool {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64 != 0
+	return &v
+}
+
+func (db *DB) PutLabel(ctx context.Context, l Label) error {
+	_, err := db.ExecContext(ctx, `
+INSERT INTO labels (account_id, thread_id, category, requires_action, urgency, relevance, priority, resolved, noise, note, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (account_id, thread_id) DO UPDATE SET category = excluded.category, requires_action = excluded.requires_action, urgency = excluded.urgency,
+  relevance = excluded.relevance, priority = excluded.priority, resolved = excluded.resolved, noise = excluded.noise, note = excluded.note, updated_at = excluded.updated_at`,
+		l.AccountID, l.ThreadID, l.Category, nullBool(l.RequiresAction), l.Urgency, l.Relevance, l.Priority, nullBool(l.Resolved), nullBool(l.Noise), l.Note, fmtTime(time.Now()))
+	return err
+}
+
+func (db *DB) DeleteLabel(ctx context.Context, accountID int64, threadID string) error {
+	_, err := db.ExecContext(ctx, `DELETE FROM labels WHERE account_id = ? AND thread_id = ?`, accountID, threadID)
+	return err
+}
+
+const labelColumns = `account_id, thread_id, category, requires_action, urgency, relevance, priority, resolved, noise, note, updated_at`
+
+func scanLabel(sc interface{ Scan(...any) error }) (Label, error) {
+	var l Label
+	var ra, res, noise sql.NullInt64
+	var upd string
+	if err := sc.Scan(&l.AccountID, &l.ThreadID, &l.Category, &ra, &l.Urgency, &l.Relevance, &l.Priority, &res, &noise, &l.Note, &upd); err != nil {
+		return Label{}, err
+	}
+	l.RequiresAction, l.Resolved, l.Noise = boolPtr(ra), boolPtr(res), boolPtr(noise)
+	l.UpdatedAt = parseTime(upd)
+	return l, nil
+}
+
+func (db *DB) GetLabel(ctx context.Context, accountID int64, threadID string) (Label, error) {
+	l, err := scanLabel(db.QueryRowContext(ctx, `SELECT `+labelColumns+` FROM labels WHERE account_id = ? AND thread_id = ?`, accountID, threadID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Label{}, ErrNotFound
+	}
+	return l, err
+}
+
+// ListLabels returns labels keyed by JudgmentKey (accountID 0 = all).
+func (db *DB) ListLabels(ctx context.Context, accountID int64) (map[string]Label, error) {
+	q := `SELECT ` + labelColumns + ` FROM labels`
+	var args []any
+	if accountID != 0 {
+		q += " WHERE account_id = ?"
+		args = append(args, accountID)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Label{}
+	for rows.Next() {
+		l, err := scanLabel(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[JudgmentKey(l.AccountID, l.ThreadID)] = l
+	}
+	return out, rows.Err()
+}
+
+// PRLabel is the user's ground truth for one pull/merge request's impact.
+type PRLabel struct {
+	AccountID   int64     `json:"accountId"`
+	Repo        string    `json:"repo"`
+	Number      int       `json:"number"`
+	ImpactLevel int       `json:"impactLevel"`
+	ChangeKind  string    `json:"changeKind"`
+	Note        string    `json:"note"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+func (db *DB) PutPRLabel(ctx context.Context, l PRLabel) error {
+	_, err := db.ExecContext(ctx, `INSERT INTO pr_labels (account_id, repo, number, impact_level, change_kind, note, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (account_id, repo, number) DO UPDATE SET impact_level = excluded.impact_level, change_kind = excluded.change_kind, note = excluded.note, updated_at = excluded.updated_at`,
+		l.AccountID, l.Repo, l.Number, l.ImpactLevel, l.ChangeKind, l.Note, fmtTime(time.Now()))
+	return err
+}
+
+// ListPRLabels returns PR labels keyed by AnalysisKey.
+func (db *DB) ListPRLabels(ctx context.Context) (map[string]PRLabel, error) {
+	rows, err := db.QueryContext(ctx, `SELECT account_id, repo, number, impact_level, change_kind, note, updated_at FROM pr_labels`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]PRLabel{}
+	for rows.Next() {
+		var l PRLabel
+		var upd string
+		if err := rows.Scan(&l.AccountID, &l.Repo, &l.Number, &l.ImpactLevel, &l.ChangeKind, &l.Note, &upd); err != nil {
+			return nil, err
+		}
+		l.UpdatedAt = parseTime(upd)
+		out[AnalysisKey(l.AccountID, l.Repo, l.Number)] = l
+	}
+	return out, rows.Err()
+}
+
+// EvalJudgment is a provider-specific judgment kept for evaluation only.
+type EvalJudgment struct {
+	AccountID     int64           `json:"accountId"`
+	ThreadID      string          `json:"threadId"`
+	Provider      string          `json:"provider"`
+	Model         string          `json:"model"`
+	Calibrated    bool            `json:"calibrated"`
+	ThreadVersion string          `json:"threadVersion"`
+	AnswersJSON   json.RawMessage `json:"answers"`
+	UsageJSON     json.RawMessage `json:"usage"`
+	LatencyMs     int64           `json:"latencyMs"`
+	CreatedAt     time.Time       `json:"createdAt"`
+}
+
+func (db *DB) PutEvalJudgment(ctx context.Context, j EvalJudgment) error {
+	_, err := db.ExecContext(ctx, `
+INSERT INTO eval_judgments (account_id, thread_id, provider, model, calibrated, thread_version, answers_json, usage_json, latency_ms, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (account_id, thread_id, provider) DO UPDATE SET model = excluded.model, calibrated = excluded.calibrated, thread_version = excluded.thread_version,
+  answers_json = excluded.answers_json, usage_json = excluded.usage_json, latency_ms = excluded.latency_ms, created_at = excluded.created_at`,
+		j.AccountID, j.ThreadID, j.Provider, j.Model, boolInt(j.Calibrated), j.ThreadVersion, orJSON(j.AnswersJSON, "{}"), orJSON(j.UsageJSON, "{}"), j.LatencyMs, fmtTime(time.Now()))
+	return err
+}
+
+// ListEvalJudgments returns one provider's eval judgments keyed by JudgmentKey.
+func (db *DB) ListEvalJudgments(ctx context.Context, provider string) (map[string]EvalJudgment, error) {
+	rows, err := db.QueryContext(ctx, `SELECT account_id, thread_id, provider, model, calibrated, thread_version, answers_json, usage_json, latency_ms, created_at FROM eval_judgments WHERE provider = ?`, provider)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]EvalJudgment{}
+	for rows.Next() {
+		var j EvalJudgment
+		var cal int
+		var answers, usage, created string
+		if err := rows.Scan(&j.AccountID, &j.ThreadID, &j.Provider, &j.Model, &cal, &j.ThreadVersion, &answers, &usage, &j.LatencyMs, &created); err != nil {
+			return nil, err
+		}
+		j.Calibrated = cal != 0
+		j.AnswersJSON, j.UsageJSON, j.CreatedAt = json.RawMessage(answers), json.RawMessage(usage), parseTime(created)
+		out[JudgmentKey(j.AccountID, j.ThreadID)] = j
+	}
+	return out, rows.Err()
+}
+
+// EvalProviders lists providers present in eval_judgments with counts.
+func (db *DB) EvalProviders(ctx context.Context) (map[string]int, error) {
+	rows, err := db.QueryContext(ctx, `SELECT provider, COUNT(*) FROM eval_judgments GROUP BY provider`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var p string
+		var n int
+		if err := rows.Scan(&p, &n); err != nil {
+			return nil, err
+		}
+		out[p] = n
 	}
 	return out, rows.Err()
 }

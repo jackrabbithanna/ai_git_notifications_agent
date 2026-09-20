@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { MineService } from "../../bindings/ghinbox/internal/services";
-import type { Account, Item } from "../../bindings/ghinbox/internal/store";
+import { MineService } from "../../bindings/gitinbox/internal/services";
+import type { Account, Item } from "../../bindings/gitinbox/internal/store";
 import { openURL } from "../lib/browser";
 import { timeAgo } from "../lib/format";
 import { Button, Chip, ErrorText, errMsg } from "../lib/ui";

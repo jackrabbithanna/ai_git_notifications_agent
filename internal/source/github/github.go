@@ -8,10 +8,10 @@ import (
 	"io"
 	"time"
 
-	"ghinbox/internal/classify"
-	"ghinbox/internal/ghmcp"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/classify"
+	"gitinbox/internal/ghmcp"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // Config mirrors ghmcp.Config plus the account's host.

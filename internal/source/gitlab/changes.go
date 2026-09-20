@@ -8,9 +8,9 @@ import (
 
 	gl "gitlab.com/gitlab-org/api/client-go/v3"
 
-	"ghinbox/internal/profiles"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/profiles"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // Changes fetches a merge request and its diffs (paged).

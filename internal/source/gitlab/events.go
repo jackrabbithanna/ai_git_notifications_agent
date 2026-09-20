@@ -9,8 +9,8 @@ import (
 
 	gl "gitlab.com/gitlab-org/api/client-go/v3"
 
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // maxEventPages caps how far back one sync reads per watched project.

@@ -8,8 +8,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"ghinbox/internal/ghmcp"
-	"ghinbox/internal/store"
+	"gitinbox/internal/ghmcp"
+	"gitinbox/internal/store"
 )
 
 // fakeMCP serves canned tool results keyed by tool name + method (or page).

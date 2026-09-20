@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"ghinbox/internal/judge"
+	"gitinbox/internal/judge"
 )
 
 func TestAskEncodesAndParses(t *testing.T) {

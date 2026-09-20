@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/pipeline"
-	"ghinbox/internal/store"
+	"gitinbox/internal/app"
+	"gitinbox/internal/pipeline"
+	"gitinbox/internal/store"
 )
 
 // ProseService serves summaries, digests and their settings (M4).
@@ -72,6 +72,6 @@ func (s *ProseService) TestNotification() error {
 	if s.App.Notify == nil {
 		return errors.New("notifications are not available in this build")
 	}
-	s.App.Notify(pipeline.Notification{Title: "GH Inbox", Body: "Desktop notifications are working."})
+	s.App.Notify(pipeline.Notification{Title: "GitInbox", Body: "Desktop notifications are working."})
 	return nil
 }

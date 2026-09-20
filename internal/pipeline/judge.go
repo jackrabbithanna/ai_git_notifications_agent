@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"ghinbox/internal/judge"
-	"ghinbox/internal/judge/jev"
-	"ghinbox/internal/judge/ollama"
-	"ghinbox/internal/scoring"
-	"ghinbox/internal/secrets"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/judge"
+	"gitinbox/internal/judge/jev"
+	"gitinbox/internal/judge/ollama"
+	"gitinbox/internal/scoring"
+	"gitinbox/internal/secrets"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // Settings keys and secret names for the judge step.
@@ -354,6 +354,7 @@ type Explanation struct {
 	State     judge.TriageState       `json:"state"`
 	Questions []judge.Question        `json:"questions"`
 	Weights   scoring.Weights         `json:"weights"`
+	Impact    *ImpactView             `json:"impact"` // analysed PR/MR, nil otherwise
 }
 
 // Explain returns state, answers and score for a thread (judging it first when asked).
@@ -386,6 +387,14 @@ func (p *Pipeline) Explain(ctx context.Context, acct store.Account, threadID str
 		ex.Stale = j.ThreadVersion != ex.Version
 		_ = json.Unmarshal(j.AnswersJSON, &ex.Answers)
 	}
+	if t.SubjectNumber != 0 && (t.SubjectType == "PullRequest" || t.SubjectType == "MergeRequest") {
+		if a, err := p.deps.DB.GetAnalysis(ctx, acct.ID, t.Repo, t.SubjectNumber); err == nil && a.ImpactLevel >= 0 {
+			v := impactViewOf(a)
+			ex.Impact = &v
+			ex.Score = scoreThread(w, t, ex.Judgment, ex.Answers, &a, acct.Login, time.Now())
+			return ex, nil
+		}
+	}
 	ex.Score = ScoreThread(w, t, ex.Judgment, ex.Answers, acct.Login, time.Now())
 	return ex, nil
 }
@@ -397,8 +406,22 @@ func ScoreThread(w scoring.Weights, t store.Thread, j *store.Judgment, answers m
 
 // Scored pairs a thread with its score; used by the inbox listing.
 type Scored struct {
-	Thread store.Thread   `json:"thread"`
-	Score  scoring.Result `json:"score"`
+	Thread       store.Thread   `json:"thread"`
+	Score        scoring.Result `json:"score"`
+	Summary      string         `json:"summary"`      // first line of the stored summary, "" when none
+	SummaryStale bool           `json:"summaryStale"` // summary predates the thread's latest activity
+	Impact       *ImpactBrief   `json:"impact"`       // analysed PR/MR, nil otherwise
+}
+
+// ImpactBrief is the inbox-sized view of an impact analysis.
+type ImpactBrief struct {
+	Level       int      `json:"level"`
+	ChangeKind  string   `json:"changeKind"`
+	ProfileID   string   `json:"profileId"`
+	Layers      []string `json:"layers"`
+	SurfaceHits int      `json:"surfaceHits"`
+	HasNote     bool     `json:"hasNote"`
+	State       string   `json:"state"`
 }
 
 // ScoreThreads scores many threads with the stored judgments and current weights.
@@ -421,6 +444,7 @@ func (p *Pipeline) ScoreThreads(ctx context.Context, threads []store.Thread) ([]
 	if err != nil {
 		return nil, err
 	}
+	summaries, _ := p.deps.DB.SummariesByKey(ctx, 0)
 	now := time.Now()
 	out := make([]Scored, 0, len(threads))
 	for _, t := range threads {
@@ -436,9 +460,40 @@ func (p *Pipeline) ScoreThreads(ctx context.Context, threads []store.Thread) ([]
 				ap = &a
 			}
 		}
-		out = append(out, Scored{Thread: t, Score: scoreThread(w, t, jp, answers, ap, logins[t.AccountID], now)})
+		sc := Scored{Thread: t, Score: scoreThread(w, t, jp, answers, ap, logins[t.AccountID], now)}
+		if sm, ok := summaries[store.JudgmentKey(t.AccountID, t.ThreadID)]; ok {
+			var c struct {
+				Summary string `json:"summary"`
+			}
+			if json.Unmarshal(sm.ContentJSON, &c) == nil {
+				sc.Summary = c.Summary
+				sc.SummaryStale = sm.ThreadVersion != t.Version()
+			}
+		}
+		if ap != nil {
+			sc.Impact = briefOf(*ap)
+		}
+		out = append(out, sc)
 	}
 	return out, nil
+}
+
+// briefOf condenses an analysis for list rows.
+func briefOf(a store.Analysis) *ImpactBrief {
+	b := &ImpactBrief{Level: a.ImpactLevel, ChangeKind: a.ChangeKind, ProfileID: a.ProfileID, HasNote: len(a.NoteJSON) > 0, State: a.State}
+	var r struct {
+		Layers []struct {
+			ID string `json:"id"`
+		} `json:"layers"`
+		SurfaceHits []json.RawMessage `json:"surfaceHits"`
+	}
+	if json.Unmarshal(a.ReportJSON, &r) == nil {
+		for _, l := range r.Layers {
+			b.Layers = append(b.Layers, l.ID)
+		}
+		b.SurfaceHits = len(r.SurfaceHits)
+	}
+	return b
 }
 
 // scoreThread is ScoreThread with an optional impact analysis.

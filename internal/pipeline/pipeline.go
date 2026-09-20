@@ -13,15 +13,15 @@ import (
 	"sync"
 	"time"
 
-	"ghinbox/internal/classify"
-	"ghinbox/internal/filter"
-	"ghinbox/internal/ghmcp"
-	"ghinbox/internal/judge"
-	"ghinbox/internal/llm"
-	"ghinbox/internal/secrets"
-	"ghinbox/internal/source"
-	githubsrc "ghinbox/internal/source/github"
-	"ghinbox/internal/store"
+	"gitinbox/internal/classify"
+	"gitinbox/internal/filter"
+	"gitinbox/internal/ghmcp"
+	"gitinbox/internal/judge"
+	"gitinbox/internal/llm"
+	"gitinbox/internal/secrets"
+	"gitinbox/internal/source"
+	githubsrc "gitinbox/internal/source/github"
+	"gitinbox/internal/store"
 )
 
 // Deps are the collaborators a Pipeline needs.

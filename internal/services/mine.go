@@ -3,8 +3,8 @@ package services
 import (
 	"context"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/store"
+	"gitinbox/internal/app"
+	"gitinbox/internal/store"
 )
 
 // MineService serves issues/PRs assigned to, mentioning, review-requested from, or authored by the account.

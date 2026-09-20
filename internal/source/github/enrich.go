@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 const bodyLimit = 2000

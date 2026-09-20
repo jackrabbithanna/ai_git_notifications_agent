@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>ghinbox</string>
+    <string>gitinbox</string>
     <key>CFBundleIdentifier</key>
-    <string>com.ghinbox.app</string>
+    <string>com.gitinbox.app</string>
     <key>CFBundleName</key>
-    <string>GH Inbox</string>
+    <string>GitInbox</string>
     <key>CFBundleDisplayName</key>
-    <string>GH Inbox</string>
+    <string>GitInbox</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -53,7 +53,7 @@
     
     
     <key>CFBundleGetInfoString</key>
-    <string>(c) 2026 ghinbox</string>
+    <string>(c) 2026 gitinbox</string>
     
 </dict>
 </plist>

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"ghinbox/internal/classify"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/classify"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 type recorder struct {

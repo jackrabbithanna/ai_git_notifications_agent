@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/judge/ollama"
-	"ghinbox/internal/pipeline"
-	"ghinbox/internal/scoring"
-	"ghinbox/internal/store"
+	"gitinbox/internal/app"
+	"gitinbox/internal/judge/ollama"
+	"gitinbox/internal/pipeline"
+	"gitinbox/internal/scoring"
+	"gitinbox/internal/store"
 )
 
 // JudgeService configures and runs the triage judge (M2).

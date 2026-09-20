@@ -12,11 +12,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"ghinbox/internal/mcpbin"
-	"ghinbox/internal/pipeline"
-	"ghinbox/internal/secrets"
-	gitlabsrc "ghinbox/internal/source/gitlab"
-	"ghinbox/internal/store"
+	"gitinbox/internal/mcpbin"
+	"gitinbox/internal/pipeline"
+	"gitinbox/internal/secrets"
+	gitlabsrc "gitinbox/internal/source/gitlab"
+	"gitinbox/internal/store"
 )
 
 // App holds the shared runtime state.
@@ -37,31 +37,36 @@ type App struct {
 // Open initialises everything. emit forwards pipeline events to the UI; notify
 // (optional) delivers desktop notifications.
 func Open(emit func(name string, data any), notify func(n pipeline.Notification)) (*App, error) {
-	dbPath := os.Getenv("GHINBOX_DB")
+	dbPath := os.Getenv("GITINBOX_DB")
 	if dbPath == "" {
 		var err error
 		if dbPath, err = store.DefaultPath(); err != nil {
 			return nil, err
 		}
 	}
+	if moved, err := store.MigrateLegacyDataDir(dbPath); err != nil {
+		return nil, fmt.Errorf("migrate legacy data dir: %w", err)
+	} else if moved {
+		fmt.Fprintf(os.Stderr, "migrated data directory from ghinbox to %s\n", filepath.Dir(dbPath))
+	}
 	db, err := store.Open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open database %s: %w", dbPath, err)
 	}
 
-	logPath := filepath.Join(filepath.Dir(dbPath), "ghinbox.log")
+	logPath := filepath.Join(filepath.Dir(dbPath), "gitinbox.log")
 	var logSink io.Writer = os.Stderr
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 		logSink = io.MultiWriter(os.Stderr, f)
 	}
 	level := slog.LevelInfo
-	if os.Getenv("GHINBOX_DEBUG") != "" {
+	if os.Getenv("GITINBOX_DEBUG") != "" {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(logSink, &slog.HandlerOptions{Level: level}))
 
 	a := &App{DB: db, Secrets: secrets.Open(), Logger: logger, DBPath: dbPath, LogPath: logPath, Notify: notify}
-	a.MCP, a.MCPErr = mcpbin.Locate(mcpbin.Options{OverridePath: os.Getenv("GHINBOX_MCP_PATH")})
+	a.MCP, a.MCPErr = mcpbin.Locate(mcpbin.Options{OverridePath: os.Getenv("GITINBOX_MCP_PATH")})
 	if a.MCPErr != nil {
 		logger.Warn("github-mcp-server not found", "err", a.MCPErr)
 	}

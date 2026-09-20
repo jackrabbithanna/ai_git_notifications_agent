@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"ghinbox/internal/judge"
-	"ghinbox/internal/llm"
-	"ghinbox/internal/profiles"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/judge"
+	"gitinbox/internal/llm"
+	"gitinbox/internal/profiles"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // changerSource adds Changer + LandedLister to fakeSource.

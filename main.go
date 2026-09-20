@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/pipeline"
-	"ghinbox/internal/services"
+	"gitinbox/internal/app"
+	"gitinbox/internal/pipeline"
+	"gitinbox/internal/services"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
@@ -37,7 +37,7 @@ func main() {
 		}
 	}, func(n pipeline.Notification) {
 		seq++
-		if err := notifier.SendNotification(notifications.NotificationOptions{ID: fmt.Sprintf("ghinbox-%d-%d", time.Now().Unix(), seq), Title: n.Title, Body: n.Body, Data: map[string]any{"url": n.URL}}); err != nil {
+		if err := notifier.SendNotification(notifications.NotificationOptions{ID: fmt.Sprintf("gitinbox-%d-%d", time.Now().Unix(), seq), Title: n.Title, Body: n.Body, Data: map[string]any{"url": n.URL}}); err != nil {
 			log.Printf("notification: %v", err)
 		}
 	})
@@ -47,7 +47,7 @@ func main() {
 	defer core.Close()
 
 	wails = application.New(application.Options{
-		Name:        "GH Inbox",
+		Name:        "GitInbox",
 		Description: "AI-triaged GitHub notifications dashboard",
 		Services: []application.Service{
 			application.NewService(&services.AccountsService{App: core}),
@@ -59,6 +59,7 @@ func main() {
 			application.NewService(&services.ImpactService{App: core}),
 			application.NewService(&services.ProfilesService{App: core}),
 			application.NewService(&services.ProseService{App: core}),
+			application.NewService(&services.EvalService{App: core}),
 			application.NewService(notifier),
 		},
 		Assets: application.AssetOptions{
@@ -70,7 +71,7 @@ func main() {
 	})
 
 	window := wails.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "GH Inbox",
+		Title:            "GitInbox",
 		Width:            1200,
 		Height:           800,
 		BackgroundColour: application.NewRGB(250, 250, 250),
@@ -97,10 +98,10 @@ func main() {
 func setupTray(wails *application.App, window *application.WebviewWindow, core *app.App) {
 	tray := wails.SystemTray.New()
 	tray.SetIcon(appIcon)
-	tray.SetTooltip("GH Inbox")
+	tray.SetTooltip("GitInbox")
 
 	menu := wails.NewMenu()
-	menu.Add("Open GH Inbox").OnClick(func(*application.Context) {
+	menu.Add("Open GitInbox").OnClick(func(*application.Context) {
 		window.Show()
 		window.Focus()
 	})
@@ -121,7 +122,7 @@ func setupTray(wails *application.App, window *application.WebviewWindow, core *
 			return
 		}
 		tray.SetLabel(strconv.Itoa(c.Unread))
-		tray.SetTooltip(fmt.Sprintf("GH Inbox — %d unread", c.Unread))
+		tray.SetTooltip(fmt.Sprintf("GitInbox — %d unread", c.Unread))
 	}
 	wails.Event.On(pipeline.EventInboxUpdated, func(*application.CustomEvent) { refresh() })
 	refresh()

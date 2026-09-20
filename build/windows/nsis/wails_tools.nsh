@@ -5,13 +5,13 @@
 !include "FileFunc.nsh"
 
 !ifndef INFO_PROJECTNAME
-    !define INFO_PROJECTNAME "ghinbox"
+    !define INFO_PROJECTNAME "gitinbox"
 !endif
 !ifndef INFO_COMPANYNAME
-    !define INFO_COMPANYNAME "ghinbox"
+    !define INFO_COMPANYNAME "gitinbox"
 !endif
 !ifndef INFO_PRODUCTNAME
-    !define INFO_PRODUCTNAME "GH Inbox"
+    !define INFO_PRODUCTNAME "GitInbox"
 !endif
 !ifndef INFO_PRODUCTVERSION
     !define INFO_PRODUCTVERSION "0.1.0"

@@ -8,8 +8,8 @@ import (
 
 	gl "gitlab.com/gitlab-org/api/client-go/v3"
 
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 const bodyLimit = 2000

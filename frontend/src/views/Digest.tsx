@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { ProseService } from "../../bindings/ghinbox/internal/services";
-import type { DigestView } from "../../bindings/ghinbox/internal/pipeline";
+import { ProseService } from "../../bindings/gitinbox/internal/services";
+import type { DigestView } from "../../bindings/gitinbox/internal/pipeline";
 import { fmtDateTime, fmtDuration } from "../lib/format";
 import { Button, Card, ErrorText, errMsg } from "../lib/ui";
 

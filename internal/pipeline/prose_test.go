@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"ghinbox/internal/judge"
-	"ghinbox/internal/llm"
-	"ghinbox/internal/store"
+	"gitinbox/internal/judge"
+	"gitinbox/internal/llm"
+	"gitinbox/internal/store"
 )
 
 // proseGen returns a canned summary or digest depending on the schema requested,

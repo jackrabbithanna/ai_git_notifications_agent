@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"ghinbox/internal/judge"
-	llmollama "ghinbox/internal/llm/ollama"
+	"gitinbox/internal/judge"
+	llmollama "gitinbox/internal/llm/ollama"
 )
 
 const DefaultURL = "http://localhost:11434"

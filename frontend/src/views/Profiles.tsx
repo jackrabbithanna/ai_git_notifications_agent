@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { ProfilesService } from "../../bindings/ghinbox/internal/services";
-import type { Profile } from "../../bindings/ghinbox/internal/profiles";
+import { ProfilesService } from "../../bindings/gitinbox/internal/services";
+import type { Profile } from "../../bindings/gitinbox/internal/profiles";
 import { Button, Card, Chip, ErrorText, errMsg } from "../lib/ui";
 
 // Profiles: built-in and user impact profiles. Editing a built-in saves a user

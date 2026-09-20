@@ -15,7 +15,11 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-const service = "ghinbox"
+const service = "gitinbox"
+
+// legacyService is the pre-rename keyring service; entries found there are
+// copied to the new service the first time they are read.
+const legacyService = "ghinbox"
 
 // ErrNotFound is returned by Get for unknown keys.
 var ErrNotFound = errors.New("secrets: not found")
@@ -36,7 +40,7 @@ func Open() Store {
 	}
 	path, err := defaultFilePath()
 	if err != nil {
-		path = filepath.Join(os.TempDir(), "ghinbox-secrets.json")
+		path = filepath.Join(os.TempDir(), "gitinbox-secrets.json")
 	}
 	return OpenFile(path)
 }
@@ -49,7 +53,17 @@ func defaultFilePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "ghinbox", "secrets.json"), nil
+	path := filepath.Join(base, "gitinbox", "secrets.json")
+	// Pre-rename fallback file: move it once, if the new one does not exist.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		old := filepath.Join(base, legacyService, "secrets.json")
+		if _, err := os.Stat(old); err == nil {
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
+				_ = os.Rename(old, path)
+			}
+		}
+	}
+	return path, nil
 }
 
 // AccountKey is the secret key under which an account's token is stored.
@@ -69,7 +83,12 @@ type keyringStore struct{}
 func (keyringStore) Get(key string) (string, error) {
 	v, err := keyring.Get(service, key)
 	if errors.Is(err, keyring.ErrNotFound) {
-		return "", ErrNotFound
+		lv, lerr := keyring.Get(legacyService, key)
+		if lerr != nil {
+			return "", ErrNotFound
+		}
+		_ = keyring.Set(service, key, lv) // migrate; the old entry is left in place
+		return lv, nil
 	}
 	return v, err
 }

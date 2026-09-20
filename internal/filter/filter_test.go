@@ -3,7 +3,7 @@ package filter
 import (
 	"testing"
 
-	"ghinbox/internal/classify"
+	"gitinbox/internal/classify"
 )
 
 func TestApply(t *testing.T) {

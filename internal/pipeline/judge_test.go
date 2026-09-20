@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"ghinbox/internal/judge"
-	"ghinbox/internal/secrets"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/judge"
+	"gitinbox/internal/secrets"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // fakeSource is a Source+Enricher with canned threads.

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"ghinbox/internal/llm"
-	llmollama "ghinbox/internal/llm/ollama"
-	"ghinbox/internal/scoring"
-	"ghinbox/internal/source"
-	"ghinbox/internal/store"
+	"gitinbox/internal/llm"
+	llmollama "gitinbox/internal/llm/ollama"
+	"gitinbox/internal/scoring"
+	"gitinbox/internal/source"
+	"gitinbox/internal/store"
 )
 
 // Settings key and events for the prose step (M4).
@@ -463,7 +463,7 @@ func (p *Pipeline) NotifyNew(ctx context.Context) (int, error) {
 	}
 	for i, n := range pending {
 		if i >= settings.NotifyMaxPerRun {
-			p.deps.Notify(Notification{Title: fmt.Sprintf("%d more items need attention", len(pending)-i), Body: "Open GH Inbox to see them"})
+			p.deps.Notify(Notification{Title: fmt.Sprintf("%d more items need attention", len(pending)-i), Body: "Open GitInbox to see them"})
 			sent++
 			break
 		}

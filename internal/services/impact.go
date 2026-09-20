@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/llm"
-	"ghinbox/internal/pipeline"
-	"ghinbox/internal/profiles"
-	"ghinbox/internal/store"
+	"gitinbox/internal/app"
+	"gitinbox/internal/llm"
+	"gitinbox/internal/pipeline"
+	"gitinbox/internal/profiles"
+	"gitinbox/internal/store"
 )
 
 // ImpactService serves the Impact view and on-demand analyses (M3).
@@ -30,6 +30,11 @@ func (s *ImpactService) List(q ImpactQuery) ([]pipeline.ImpactView, error) {
 		limit = 200
 	}
 	return s.App.Pipe.ListImpact(context.Background(), store.AnalysisQuery{AccountID: q.AccountID, MinLevel: q.MinLevel, Landed: q.Landed, Limit: limit})
+}
+
+// Get returns one PR/MR's analysis (nil when not analysed yet).
+func (s *ImpactService) Get(accountID int64, repo string, number int) (*pipeline.ImpactView, error) {
+	return s.App.Pipe.GetImpact(context.Background(), accountID, repo, number)
 }
 
 // Analyze runs (or re-runs with force) the analysis for one PR/MR; profileID "" = auto.

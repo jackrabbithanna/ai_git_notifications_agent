@@ -6,7 +6,7 @@ package classify
 import (
 	"strings"
 
-	"ghinbox/internal/ghmcp"
+	"gitinbox/internal/ghmcp"
 )
 
 // Kind is the activity kind of the latest event on a thread.

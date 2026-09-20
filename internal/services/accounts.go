@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"ghinbox/internal/app"
-	"ghinbox/internal/store"
+	"gitinbox/internal/app"
+	"gitinbox/internal/store"
 )
 
 // AccountsService manages GitHub accounts and their tokens.

@@ -5,11 +5,11 @@ version: '3'
 
 # This information is used to generate the build assets.
 info:
-  companyName: "ghinbox" # The name of the company
-  productName: "GH Inbox" # The name of the application
-  productIdentifier: "com.ghinbox.app" # The unique product identifier
+  companyName: "gitinbox" # The name of the company
+  productName: "GitInbox" # The name of the application
+  productIdentifier: "com.gitinbox.app" # The unique product identifier
   description: "AI-triaged GitHub notifications dashboard" # The application description
-  copyright: "(c) 2026 ghinbox" # Copyright text
+  copyright: "(c) 2026 gitinbox" # Copyright text
   comments: "" # Comments
   version: "0.1.0" # The application version
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)

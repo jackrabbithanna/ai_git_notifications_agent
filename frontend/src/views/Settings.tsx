@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { AccountsService, DiagnosticsService, ImpactService, JudgeService, ProseService, WatchesService } from "../../bindings/ghinbox/internal/services";
-import type { ProseSettings } from "../../bindings/ghinbox/internal/pipeline";
-import type { ImpactSettings } from "../../bindings/ghinbox/internal/pipeline";
-import type { JudgeStatus } from "../../bindings/ghinbox/internal/services";
-import type { JudgeSettings } from "../../bindings/ghinbox/internal/pipeline";
-import type { Weights } from "../../bindings/ghinbox/internal/scoring";
-import type { WatchedProject } from "../../bindings/ghinbox/internal/store";
-import type { AccountView } from "../../bindings/ghinbox/internal/services";
-import { Rules } from "../../bindings/ghinbox/internal/filter";
+import { AccountsService, DiagnosticsService, ImpactService, JudgeService, ProseService, WatchesService } from "../../bindings/gitinbox/internal/services";
+import type { ProseSettings } from "../../bindings/gitinbox/internal/pipeline";
+import type { ImpactSettings } from "../../bindings/gitinbox/internal/pipeline";
+import type { JudgeStatus } from "../../bindings/gitinbox/internal/services";
+import type { JudgeSettings } from "../../bindings/gitinbox/internal/pipeline";
+import type { Weights } from "../../bindings/gitinbox/internal/scoring";
+import type { WatchedProject } from "../../bindings/gitinbox/internal/store";
+import type { AccountView } from "../../bindings/gitinbox/internal/services";
+import { Rules } from "../../bindings/gitinbox/internal/filter";
 import { fmtDateTime } from "../lib/format";
 import { Button, Card, Chip, ErrorText, errMsg } from "../lib/ui";
 

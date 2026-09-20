@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"ghinbox/internal/judge"
+	"gitinbox/internal/judge"
 )
 
 func TestAskSchemaAndParsing(t *testing.T) {

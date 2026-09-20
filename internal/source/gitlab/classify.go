@@ -1,6 +1,6 @@
 package gitlab
 
-import "ghinbox/internal/classify"
+import "gitinbox/internal/classify"
 
 // classifyTodo maps a to-do action onto the shared activity kinds and relations.
 func classifyTodo(action, targetKind string) (classify.Kind, []string) {

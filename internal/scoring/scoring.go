@@ -6,7 +6,7 @@ import (
 	"math"
 	"time"
 
-	"ghinbox/internal/judge"
+	"gitinbox/internal/judge"
 )
 
 // Weights are user-tunable (Settings sliders). Kind and Relation maps add a

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { ImpactService } from "../../bindings/ghinbox/internal/services";
-import type { ImpactQuery } from "../../bindings/ghinbox/internal/services";
-import type { ImpactReport, ImpactView } from "../../bindings/ghinbox/internal/pipeline";
-import type { Account } from "../../bindings/ghinbox/internal/store";
-import type { Answer } from "../../bindings/ghinbox/internal/judge";
+import { EvalService, ImpactService } from "../../bindings/gitinbox/internal/services";
+import type { ImpactQuery } from "../../bindings/gitinbox/internal/services";
+import type { ImpactReport, ImpactView } from "../../bindings/gitinbox/internal/pipeline";
+import type { Account } from "../../bindings/gitinbox/internal/store";
+import type { Answer } from "../../bindings/gitinbox/internal/judge";
 import { openURL } from "../lib/browser";
 import { fmtDateTime, timeAgo } from "../lib/format";
 import { Button, Chip, ErrorText, errMsg } from "../lib/ui";
@@ -160,7 +160,7 @@ export default function Impact({ refreshKey, accountId, accounts }: { refreshKey
                   </Button>
                 </span>
               </div>
-              {open === key && <Details v={v} onChanged={load} />}
+              {open === key && <ImpactDetails v={v} onChanged={load} />}
             </li>
           );
         })}
@@ -172,10 +172,17 @@ export default function Impact({ refreshKey, accountId, accounts }: { refreshKey
   );
 }
 
-function Details({ v, onChanged }: { v: ImpactView; onChanged: () => void }) {
+export function ImpactDetails({ v, onChanged }: { v: ImpactView; onChanged: () => void }) {
   const a = v.analysis;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [labelLevel, setLabelLevel] = useState("-1");
+  const [labelKind, setLabelKind] = useState("");
+  const [labelSaved, setLabelSaved] = useState(false);
+  const saveLabel = () =>
+    EvalService.SetPRLabel({ accountId: a.accountId, repo: a.repo, number: a.number, impactLevel: Number(labelLevel), changeKind: labelKind, note: "", updatedAt: "" })
+      .then(() => setLabelSaved(true))
+      .catch((e) => setError(errMsg(e)));
   const answers = v.answers ?? {};
   const act = (p: Promise<unknown>) => {
     setBusy(true);
@@ -199,6 +206,26 @@ function Details({ v, onChanged }: { v: ImpactView; onChanged: () => void }) {
         </span>
       </div>
       {error && <ErrorText>{error}</ErrorText>}
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-neutral-500">Your label:</span>
+        <select className="rounded border border-neutral-300 bg-white px-1 py-0.5 dark:border-neutral-700 dark:bg-neutral-900" value={labelLevel} onChange={(e) => setLabelLevel(e.target.value)}>
+          <option value="-1">impact?</option>
+          {LEVELS.map((l, i) => (
+            <option key={l} value={i}>
+              {l}
+            </option>
+          ))}
+        </select>
+        <select className="rounded border border-neutral-300 bg-white px-1 py-0.5 dark:border-neutral-700 dark:bg-neutral-900" value={labelKind} onChange={(e) => setLabelKind(e.target.value)}>
+          <option value="">change kind?</option>
+          {["bugfix", "refactor_internal", "new_feature", "architectural", "api_change", "data_model_change", "deprecation_or_removal", "dependency_or_packaging", "docs_tests_only"].map((k) => (
+            <option key={k} value={k}>
+              {k.replace(/_/g, " ")}
+            </option>
+          ))}
+        </select>
+        <Button onClick={saveLabel}>{labelSaved ? "Saved ✓" : "Save PR label"}</Button>
+      </div>
       <div className="grid gap-3 md:grid-cols-2">
         <div>
           <div className="mb-1 font-medium">Layers touched ({v.report.totalFiles} files, {v.report.ignored} ignored)</div>

@@ -8,8 +8,8 @@ import (
 	"errors"
 	"time"
 
-	"ghinbox/internal/profiles"
-	"ghinbox/internal/store"
+	"gitinbox/internal/profiles"
+	"gitinbox/internal/store"
 )
 
 // ErrWritesDisabled is returned by write methods while the account is read-only.

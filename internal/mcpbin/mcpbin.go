@@ -51,7 +51,7 @@ type Options struct {
 	// OverridePath is used verbatim when non-empty (must exist and be executable).
 	OverridePath string
 	// DataDir is where the bundled binary is extracted. Defaults to
-	// $XDG_DATA_HOME/ghinbox/bin (or ~/.local/share/ghinbox/bin).
+	// $XDG_DATA_HOME/gitinbox/bin (or ~/.local/share/gitinbox/bin).
 	DataDir string
 }
 
@@ -163,7 +163,7 @@ func defaultDataDir() (string, error) {
 		}
 		base = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(base, "ghinbox", "bin"), nil
+	return filepath.Join(base, "gitinbox", "bin"), nil
 }
 
 func checkExecutable(p string) error {
