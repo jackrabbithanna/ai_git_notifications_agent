@@ -46,6 +46,8 @@ func main() {
 			application.NewService(&services.InboxService{App: core}),
 			application.NewService(&services.MineService{App: core}),
 			application.NewService(&services.DiagnosticsService{App: core}),
+			application.NewService(&services.WatchesService{App: core}),
+			application.NewService(&services.JudgeService{App: core}),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
@@ -69,7 +71,7 @@ func main() {
 	// Warm the inbox shortly after launch without blocking the window.
 	go func() {
 		time.Sleep(2 * time.Second)
-		if _, err := core.Pipe.SyncAll(context.Background(), false); err != nil {
+		if _, _, err := core.Pipe.SyncAndJudge(context.Background(), false); err != nil {
 			core.Logger.Warn("startup sync", "err", err)
 		}
 	}()
@@ -92,7 +94,7 @@ func setupTray(wails *application.App, window *application.WebviewWindow, core *
 	})
 	menu.Add("Sync now").OnClick(func(*application.Context) {
 		go func() {
-			if _, err := core.Pipe.SyncAll(context.Background(), false); err != nil {
+			if _, _, err := core.Pipe.SyncAndJudge(context.Background(), false); err != nil {
 				core.Logger.Warn("tray sync", "err", err)
 			}
 		}()

@@ -1,23 +1,27 @@
 import { useEffect, useState } from "react";
-import { DiagnosticsService } from "../../bindings/ghinbox/internal/services";
-import type { Environment, MCPServerInfo } from "../../bindings/ghinbox/internal/services";
+import { DiagnosticsService, JudgeService } from "../../bindings/ghinbox/internal/services";
+import type { Environment, JudgeStatus, MCPServerInfo } from "../../bindings/ghinbox/internal/services";
 import type { Stats, ToolInfo } from "../../bindings/ghinbox/internal/ghmcp";
 import type { Account } from "../../bindings/ghinbox/internal/store";
 import { fmtDateTime } from "../lib/format";
 import { Button, Card, Chip, ErrorText, errMsg } from "../lib/ui";
 
-export default function Diagnostics({ accounts }: { accounts: Account[] }) {
+export default function Diagnostics({ accounts: allAccounts }: { accounts: Account[] }) {
+  const accounts = allAccounts.filter((a) => a.forge !== "gitlab");
+  const gitlabAccounts = allAccounts.filter((a) => a.forge === "gitlab");
   const [mcp, setMcp] = useState<MCPServerInfo | null>(null);
   const [env, setEnv] = useState<Environment | null>(null);
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [stats, setStats] = useState<Record<string, Stats | undefined>>({});
   const [selected, setSelected] = useState<number>(accounts[0]?.id ?? 0);
+  const [judge, setJudge] = useState<JudgeStatus | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     DiagnosticsService.MCPServerInfo().then(setMcp).catch((e) => setError(errMsg(e)));
     DiagnosticsService.Environment().then(setEnv).catch((e) => setError(errMsg(e)));
+    JudgeService.Status().then(setJudge).catch((e) => setError(errMsg(e)));
     DiagnosticsService.ClientStats()
       .then((s) => setStats((s ?? {}) as Record<string, Stats | undefined>))
       .catch((e) => setError(errMsg(e)));
@@ -70,8 +74,24 @@ export default function Diagnostics({ accounts }: { accounts: Account[] }) {
         </Card>
       </div>
 
+      {gitlabAccounts.length > 0 && (
+        <Card title="GitLab accounts">
+          <ul className="text-sm">
+            {gitlabAccounts.map((a) => (
+              <li key={a.id} className="flex flex-wrap gap-3 py-1">
+                <span className="font-medium">{a.login}</span>
+                <span className="text-neutral-500">{a.host}</span>
+                <span className="text-neutral-500">REST via official client (no MCP server)</span>
+                <span className="text-neutral-500">token scopes: {a.tokenScopes || "unknown"}</span>
+                <span className="text-neutral-500">write mode: {a.writeMode}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
       <Card
-        title="Server tools"
+        title="Server tools (GitHub accounts)"
         actions={
           <>
             <select
@@ -117,6 +137,28 @@ export default function Diagnostics({ accounts }: { accounts: Account[] }) {
               </tbody>
             </table>
           </>
+        )}
+      </Card>
+
+      <Card title="Triage judge">
+        {judge && (
+          <dl className="grid grid-cols-[8rem_1fr] gap-y-1 text-sm">
+            <dt className="text-neutral-500">Provider</dt>
+            <dd>{judge.provider ? `${judge.provider} (${judge.calibrated ? "calibrated" : "uncalibrated"})` : <span className="text-amber-700">{judge.error}</span>}</dd>
+            <dt className="text-neutral-500">Jev key</dt>
+            <dd>{judge.hasJevKey ? "stored" : "missing"}</dd>
+            <dt className="text-neutral-500">Judgments</dt>
+            <dd>
+              {judge.stats.total} total ·{" "}
+              {Object.entries(judge.stats.byProvider ?? {})
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(", ") || "none"}
+            </dd>
+            <dt className="text-neutral-500">Tokens</dt>
+            <dd>
+              {judge.stats.inputTokens} in / {judge.stats.outputTokens} out
+            </dd>
+          </dl>
         )}
       </Card>
 

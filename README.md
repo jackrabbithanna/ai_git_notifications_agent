@@ -8,7 +8,12 @@ PR impact analysis for upstream projects you build on.
 Architecture, decisions, and milestones live in [PLAN.md](PLAN.md). Current state is
 milestone **M1**: accounts + keyring, MCP client to the bundled GitHub MCP server, notification
 sync with deterministic classification and noise filtering, "Mine" searches, an Inbox/Mine/
-Settings/Diagnostics UI with local read/done/snooze, a tray badge, and a headless CLI. No AI yet.
+Settings/Diagnostics UI with local read/done/snooze, a tray badge, and a headless CLI; **M1.5** adds
+GitLab (gitlab.com or self-hosted) as a second source: To-Do list, watched-project activity, and Mine
+via the official REST client. **M2** adds typed triage judgments: TypeSafe Jev (calibrated) or an
+Ollama model (uncalibrated fallback) answers six questions per thread (category, needs me, urgency,
+relevance, resolved, next action); a weighted score orders the inbox and re-ranks instantly when
+weights change; an explain panel shows the probabilities and the state the judge saw.
 
 ## Stack
 
@@ -45,7 +50,19 @@ bin/ghinbox-cli sync --full          # pull the last 7 days incl. read; later ru
 bin/ghinbox-cli inbox                # grouped by activity kind; --all/--noise/--done widen it
 bin/ghinbox-cli mine                 # assigned / mentioned / review-requested / authored
 bin/ghinbox-cli done <thread-id>     # local state; mirrored to GitHub only in write mode 'notifications'
+bin/ghinbox-cli account add --forge gitlab --host lab.civicrm.org --token-file ~/.config/ghinbox/pat-lab.civicrm.org.txt
+bin/ghinbox-cli watch add --account <login> dev/core   # GitLab: poll a project's activity each sync
+bin/ghinbox-cli jev-key --token-file ~/.config/ghinbox/jev-key.txt   # TypeSafe Jev key → keyring
+bin/ghinbox-cli settings set ollama.url http://gpu-box:11434 && bin/ghinbox-cli settings set ollama.model qwen3:8b
+bin/ghinbox-cli settings set interests "CiviCRM extensions using APIv4, Drupal integration"
+bin/ghinbox-cli judge                # enrich + judge unread threads lacking a fresh judgment
+bin/ghinbox-cli explain --now <thread-id>   # answers, probabilities, state and score for one thread
 ```
+
+Judge providers: **Jev** (TypeSafe) is calibrated and fast (~0.6 s/thread). **Ollama** is the
+uncalibrated fallback; pick a model that fits entirely in VRAM (a 27B model that spills to CPU took
+~5 min per thread; a 9B model ~1–2 min) and keep `max` small. Weight changes re-rank from stored
+answers without new inference.
 
 The CLI and the desktop app share the same database (`$XDG_DATA_HOME/ghinbox/ghinbox.db`)
 and keyring entries. `GHINBOX_DEBUG=1` shows server stderr and debug logs.
@@ -59,6 +76,10 @@ Each account has a write mode. `readonly` (default) starts `github-mcp-server` w
 allowlist; nothing touching issues, PRs, comments, labels or repos is ever callable.
 With a classic token the server additionally registers only tools its scopes permit, so a
 `notifications`-only token never exposes issue/PR writes at all. See PLAN.md §4.9.
+
+GitLab accounts have no MCP server: reads use the official REST client with a `read_api` token;
+in `notifications` mode the only writes are marking a to-do done and unsubscribing from an
+issue/MR (needs an `api`-scoped token). "Read" is local-only on GitLab.
 
 `wails3 build` runs `common:build:mcp`, which compiles `github-mcp-server` for the target
 OS/arch into `internal/mcpbin/bin/` (git-ignored) so `//go:embed` bundles it. At runtime
@@ -78,7 +99,10 @@ internal/secrets/        OS keyring with 0600-file fallback
 internal/classify/       activity kind + relation tags from notification fields
 internal/filter/         rule-based noise filter (bots, green CI, mutes)
 internal/pipeline/       sync → classify → filter → store; mine searches; local actions; scheduler
-internal/services/       Wails services: Accounts, Inbox, Mine, Diagnostics
+internal/source/         forge seam; source/github (ghmcp) and source/gitlab (client-go REST)
+internal/judge/          typed judgments: triage.v1 rubric, jev (TypeSafe) and ollama providers
+internal/scoring/        composite priority from stored judgments + user weights
+internal/services/       Wails services: Accounts, Inbox, Mine, Diagnostics, Watches, Judge
 frontend/                React + TS + Tailwind (Vite)
 build/                   Wails build config and platform Taskfiles
 .github/workflows/       Linux amd64 + arm64 CI builds

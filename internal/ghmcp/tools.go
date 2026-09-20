@@ -225,6 +225,24 @@ func (c *Client) IssueRead(ctx context.Context, owner, repo string, number int, 
 	return json.RawMessage(text), nil
 }
 
+// IssueReadPage is IssueRead with pagination arguments.
+func (c *Client) IssueReadPage(ctx context.Context, owner, repo string, number int, method string, page, perPage int) (json.RawMessage, error) {
+	text, err := c.CallRaw(ctx, ToolIssueRead, map[string]any{"owner": owner, "repo": repo, "issue_number": number, "method": method, "page": page, "perPage": perPage})
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(text), nil
+}
+
+// PullRequestReadPage is PullRequestRead with pagination arguments.
+func (c *Client) PullRequestReadPage(ctx context.Context, owner, repo string, number int, method string, page, perPage int) (json.RawMessage, error) {
+	text, err := c.CallRaw(ctx, ToolPullRequestRead, map[string]any{"owner": owner, "repo": repo, "pullNumber": number, "method": method, "page": page, "perPage": perPage})
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(text), nil
+}
+
 // PullRequestRead calls pull_request_read with a method (get, get_diff, get_status, get_files,
 // get_commits, get_review_comments, get_reviews, get_comments, get_check_runs).
 func (c *Client) PullRequestRead(ctx context.Context, owner, repo string, number int, method string) (json.RawMessage, error) {

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"ghinbox/internal/mcpbin"
 	"ghinbox/internal/pipeline"
 	"ghinbox/internal/secrets"
+	gitlabsrc "ghinbox/internal/source/gitlab"
 	"ghinbox/internal/store"
 )
 
@@ -52,6 +54,16 @@ func main() {
 		err = cmdInbox(ctx, os.Args[2:])
 	case "mine":
 		err = cmdMine(ctx, os.Args[2:])
+	case "watch":
+		err = cmdWatch(ctx, os.Args[2:])
+	case "judge":
+		err = cmdJudge(ctx, os.Args[2:])
+	case "explain":
+		err = cmdExplain(ctx, os.Args[2:])
+	case "settings":
+		err = cmdSettings(ctx, os.Args[2:])
+	case "jev-key":
+		err = cmdJevKey(ctx, os.Args[2:])
 	case "read", "done", "snooze", "undone":
 		err = cmdAction(ctx, os.Args[1], os.Args[2:])
 	case "help", "-h", "--help":
@@ -72,13 +84,20 @@ func usage() {
   mcp path                                   locate the github-mcp-server binary
   mcp tools [--account L]                    list the server's tools (read-only unless account write mode says otherwise)
   mcp call [--account L] TOOL [JSON]         call a tool through the allowlist and print its text result
-  account add --token-file F [--host H]      validate a PAT with get_me and store it in the keyring
+  account add --token-file F [--forge github|gitlab] [--host H]
+                                             validate a PAT (get_me / GET /user) and store it in the keyring
   account list
   account remove LOGIN
   account write-mode LOGIN readonly|notifications
   sync [--account L] [--full]                pull notifications (+ "mine" when due)
   inbox [--account L] [--all] [--noise] [--done] [--limit N]
-  mine [--account L] [--closed]
+  mine [--account L] [--closed] [--refresh]
+  watch add|remove [--account L] PATH        (GitLab) poll a project's activity, e.g. dev/core
+  watch list [--account L]
+  judge [--account L] [--limit N]            enrich + judge stale/unjudged unread threads (triage.v1)
+  explain [--account L] [--now] THREAD_ID    show state, answers, probabilities and score (--now judges first)
+  settings [show | set KEY VALUE]            KEY: provider(auto|jev|ollama|off) jev.model jev.url ollama.url ollama.model max concurrency interests
+  jev-key --token-file F                     store the TypeSafe Jev API key in the keyring (empty file removes it)
   read|done|undone [--account L] THREAD_ID   local triage state (mirrored to GitHub only in write mode 'notifications')
   snooze [--account L] --for 2h THREAD_ID
   version
@@ -125,6 +144,7 @@ func openEnv(needMCP bool) (*env, error) {
 		e.mcp = info
 	}
 	e.pipe = pipeline.New(pipeline.Deps{DB: db, Secrets: e.sec, MCPPath: e.mcp.Path, Logger: logger, ServerLog: serverLog})
+	e.pipe.SetGitLabFactory(gitlabsrc.Factory())
 	return e, nil
 }
 
@@ -149,17 +169,33 @@ func (e *env) account(ctx context.Context, login string) (store.Account, error) 
 			return store.Account{}, errors.New("several accounts configured; pass --account LOGIN")
 		}
 	}
+	// Accept an id, "login@host", a host, or a login (which must be unambiguous).
+	var matches []store.Account
 	for _, a := range accts {
-		if strings.EqualFold(a.Login, login) {
-			return a, nil
+		switch {
+		case strconv.FormatInt(a.ID, 10) == login,
+			strings.EqualFold(a.Login+"@"+a.Host, login),
+			strings.EqualFold(a.Host, login),
+			strings.EqualFold(a.Login, login):
+			matches = append(matches, a)
 		}
 	}
-	return store.Account{}, fmt.Errorf("unknown account %q", login)
+	switch len(matches) {
+	case 0:
+		return store.Account{}, fmt.Errorf("unknown account %q (use LOGIN@HOST or the id from `ghinbox account list`)", login)
+	case 1:
+		return matches[0], nil
+	}
+	var names []string
+	for _, a := range matches {
+		names = append(names, fmt.Sprintf("%s@%s (id %d)", a.Login, a.Host, a.ID))
+	}
+	return store.Account{}, fmt.Errorf("account %q is ambiguous: %s — use LOGIN@HOST or the id", login, strings.Join(names, ", "))
 }
 
 func newFlags(name string) (*flag.FlagSet, *string) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	acct := fs.String("account", "", "account login (optional when only one is configured)")
+	acct := fs.String("account", "", "account: id, LOGIN@HOST, host, or login (optional when only one is configured)")
 	return fs, acct
 }
 
@@ -191,7 +227,7 @@ func cmdMCP(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		client, err := e.pipe.Client(ctx, acct)
+		client, err := e.pipe.MCPClient(ctx, acct)
 		if err != nil {
 			return err
 		}
@@ -231,7 +267,7 @@ func cmdMCP(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		client, err := e.pipe.Client(ctx, acct)
+		client, err := e.pipe.MCPClient(ctx, acct)
 		if err != nil {
 			return err
 		}
@@ -255,7 +291,8 @@ func cmdAccount(ctx context.Context, args []string) error {
 	case "add":
 		fs := flag.NewFlagSet("account add", flag.ContinueOnError)
 		tokenFile := fs.String("token-file", "", "file containing the personal access token (first line)")
-		host := fs.String("host", "", "GitHub Enterprise host (default github.com)")
+		forge := fs.String("forge", "github", "github or gitlab")
+		host := fs.String("host", "", "forge host (default github.com / gitlab.com)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -275,11 +312,11 @@ func cmdAccount(ctx context.Context, args []string) error {
 			return err
 		}
 		defer e.close()
-		acct, err := e.pipe.AddAccount(ctx, token, *host)
+		acct, err := e.pipe.AddAccount(ctx, *forge, token, *host)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("account %s@%s (id %d) ready; token stored in %s; write mode %s\n", acct.Login, acct.Host, acct.ID, e.sec.Backend(), acct.WriteMode)
+		fmt.Printf("account %s@%s (%s, id %d) ready; token stored in %s; write mode %s; token scopes %s\n", acct.Login, acct.Host, acct.Forge, acct.ID, e.sec.Backend(), acct.WriteMode, orUnknown(acct.TokenScopes))
 		return nil
 	case "list":
 		e, err := openEnv(false)
@@ -292,14 +329,14 @@ func cmdAccount(ctx context.Context, args []string) error {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		fmt.Fprintf(w, "ID\tLOGIN\tHOST\tWRITE MODE\tLAST SYNC\tLAST ERROR\n")
+		fmt.Fprintf(w, "ID\tFORGE\tLOGIN\tHOST\tWRITE MODE\tSCOPES\tLAST SYNC\tLAST ERROR\n")
 		for _, a := range accts {
 			st, _ := e.db.GetSyncState(ctx, a.ID)
 			last := "never"
 			if st.LastSyncAt != nil {
 				last = st.LastSyncAt.Local().Format("2006-01-02 15:04")
 			}
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Login, a.Host, a.WriteMode, last, st.LastError)
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Forge, a.Login, a.Host, a.WriteMode, orUnknown(a.TokenScopes), last, st.LastError)
 		}
 		w.Flush()
 		fmt.Printf("secrets backend: %s\n", e.sec.Backend())
@@ -378,6 +415,9 @@ func cmdSync(ctx context.Context, args []string) error {
 			fmt.Printf("; mine %d items", r.MineItems)
 		}
 		fmt.Printf(" in %s", r.Duration.Round(time.Millisecond))
+		for _, w := range r.Warnings {
+			fmt.Printf(" — warning: %s", w)
+		}
 		if r.Error != "" {
 			fmt.Printf(" — ERROR: %s", r.Error)
 			failed = true
@@ -419,18 +459,30 @@ func cmdInbox(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	groups := map[string][]store.Thread{}
-	for _, t := range threads {
-		groups[t.ActivityKind] = append(groups[t.ActivityKind], t)
+	scored, err := e.pipe.ScoreThreads(ctx, threads)
+	if err != nil {
+		return err
+	}
+	groups := map[string][]pipeline.Scored{}
+	for _, sc := range scored {
+		k := sc.Thread.ActivityKind
+		if sc.Score.Pinned || sc.Score.Bucket == "needs_me" {
+			k = "needs_me"
+		} else if sc.Score.Bucket == "resolved" {
+			k = "resolved"
+		}
+		groups[k] = append(groups[k], sc)
 	}
 	kinds := make([]string, 0, len(groups))
 	for k := range groups {
 		kinds = append(kinds, k)
+		sort.SliceStable(groups[k], func(i, j int) bool { return groups[k][i].Score.Priority > groups[k][j].Score.Priority })
 	}
 	sort.Slice(kinds, func(i, j int) bool { return kindRank(kinds[i]) < kindRank(kinds[j]) })
 	for _, k := range kinds {
 		fmt.Printf("== %s (%d)\n", k, len(groups[k]))
-		for _, t := range groups[k] {
+		for _, sc := range groups[k] {
+			t := sc.Thread
 			flags := ""
 			if t.FilterVerdict == "noise" {
 				flags += " [noise:" + t.FilterReason + "]"
@@ -441,7 +493,14 @@ func cmdInbox(ctx context.Context, args []string) error {
 			if t.IsRead() {
 				flags += " [read]"
 			}
-			fmt.Printf("  %-12s %-32s #%-6d %s%s  (%s, %s)\n", t.ThreadID, trunc(t.Repo, 32), t.SubjectNumber, trunc(t.Title, 70), flags, t.Reason, t.UpdatedAt.Local().Format("Jan 02 15:04"))
+			cat := ""
+			if sc.Score.Judged {
+				cat = " " + sc.Score.Category
+				if sc.Score.Unsure {
+					cat += "?"
+				}
+			}
+			fmt.Printf("  %3d%%%-22s %-12s %-28s #%-6d %s%s  (%s, %s)\n", sc.Score.Percent, cat, t.ThreadID, trunc(t.Repo, 28), t.SubjectNumber, trunc(t.Title, 60), flags, t.Reason, t.UpdatedAt.Local().Format("Jan 02 15:04"))
 		}
 	}
 	c, err := e.db.Counts(ctx, q.AccountID)
@@ -453,7 +512,7 @@ func cmdInbox(ctx context.Context, args []string) error {
 }
 
 func kindRank(k string) int {
-	order := []string{"review_requested", "mention", "assignment", "new_pr", "new_issue", "review", "comment", "state_change", "ci", "security", "release", "discussion", "commit", "other"}
+	order := []string{"needs_me", "review_requested", "mention", "assignment", "new_pr", "new_issue", "review", "comment", "state_change", "ci", "security", "release", "discussion", "commit", "other", "resolved"}
 	for i, o := range order {
 		if o == k {
 			return i
@@ -465,21 +524,29 @@ func kindRank(k string) int {
 func cmdMine(ctx context.Context, args []string) error {
 	fs, login := newFlags("mine")
 	closed := fs.Bool("closed", false, "include closed items")
+	refresh := fs.Bool("refresh", false, "re-run the searches now (otherwise sync refreshes them every 10 minutes)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	e, err := openEnv(false)
+	e, err := openEnv(*refresh)
 	if err != nil {
 		return err
 	}
 	defer e.close()
 	var acctID int64
-	if *login != "" {
+	if *login != "" || *refresh {
 		acct, err := e.account(ctx, *login)
 		if err != nil {
 			return err
 		}
 		acctID = acct.ID
+		if *refresh {
+			n, err := e.pipe.SyncMine(ctx, acct)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("refreshed: %d items for %s@%s\n", n, acct.Login, acct.Host)
+		}
 	}
 	items, err := e.db.ListItems(ctx, acctID, *closed)
 	if err != nil {
@@ -492,6 +559,256 @@ func cmdMine(ctx context.Context, args []string) error {
 	}
 	w.Flush()
 	fmt.Printf("%d items\n", len(items))
+	return nil
+}
+
+func cmdWatch(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("watch: want add|remove|list")
+	}
+	fs, login := newFlags("watch " + args[0])
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	e, err := openEnv(false)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	acct, err := e.account(ctx, *login)
+	if err != nil {
+		return err
+	}
+	if acct.Forge != store.ForgeGitLab {
+		return fmt.Errorf("watch: account %s is %s; watched projects only apply to GitLab accounts", acct.Login, acct.Forge)
+	}
+	switch args[0] {
+	case "add", "remove":
+		if fs.NArg() < 1 {
+			return fmt.Errorf("watch %s: want PATH (e.g. dev/core)", args[0])
+		}
+		if args[0] == "add" {
+			if err := e.db.AddWatched(ctx, acct.ID, fs.Arg(0)); err != nil {
+				return err
+			}
+			fmt.Printf("watching %s on %s (resolved on next sync)\n", fs.Arg(0), acct.Host)
+			return nil
+		}
+		return e.db.RemoveWatched(ctx, acct.ID, fs.Arg(0))
+	case "list":
+		ws, err := e.db.ListWatched(ctx, acct.ID)
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		fmt.Fprintf(w, "PATH\tPROJECT ID\tLAST EVENT\tLAST ERROR\n")
+		for _, x := range ws {
+			last := "never"
+			if x.LastEventAt != nil {
+				last = x.LastEventAt.Local().Format("2006-01-02 15:04")
+			}
+			fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", x.Path, x.ProjectID, last, x.LastError)
+		}
+		w.Flush()
+		return nil
+	}
+	return fmt.Errorf("watch: unknown subcommand %q", args[0])
+}
+
+func cmdJudge(ctx context.Context, args []string) error {
+	fs, login := newFlags("judge")
+	limit := fs.Int("limit", 0, "max threads this run (0 = settings max)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	e, err := openEnv(true)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	var reports []pipeline.JudgeReport
+	if *login != "" {
+		acct, err := e.account(ctx, *login)
+		if err != nil {
+			return err
+		}
+		rep, jerr := e.pipe.JudgeAccount(ctx, acct, *limit)
+		if jerr != nil && rep.Error == "" {
+			rep.Error = jerr.Error()
+		}
+		reports = []pipeline.JudgeReport{rep}
+	} else {
+		reports, err = e.pipe.JudgeAll(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	var failed bool
+	for _, r := range reports {
+		fmt.Printf("%s: provider %s %s — candidates %d, judged %d, enriched %d, failed %d, tokens in/out %d/%d, %s\n",
+			r.Login, orUnknown(r.Provider), r.Model, r.Candidates, r.Judged, r.Enriched, r.Failed, r.Usage.InputTokens, r.Usage.OutputTokens, r.Duration.Round(time.Millisecond))
+		for _, m := range r.Errors {
+			fmt.Printf("  - %s\n", m)
+		}
+		if r.Error != "" {
+			fmt.Printf("  ERROR: %s\n", r.Error)
+			failed = true
+		}
+	}
+	if failed {
+		return errors.New("judge run reported errors")
+	}
+	return nil
+}
+
+func cmdExplain(ctx context.Context, args []string) error {
+	fs, login := newFlags("explain")
+	now := fs.Bool("now", false, "judge the thread now before explaining")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return errors.New("explain: want THREAD_ID")
+	}
+	e, err := openEnv(*now)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	acct, err := e.account(ctx, *login)
+	if err != nil {
+		return err
+	}
+	ex, err := e.pipe.Explain(ctx, acct, fs.Arg(0), *now)
+	if err != nil {
+		return err
+	}
+	t := ex.Thread
+	fmt.Printf("%s %s#%d — %s\n  kind %s, reason %s, actor %s, version %s\n", t.Repo, t.SubjectType, t.SubjectNumber, t.Title, t.ActivityKind, t.Reason, orUnknown(t.Actor), ex.Version)
+	if t.EnrichedVersion != "" {
+		fmt.Printf("  item: author %s, state %s, labels %v, body %d chars; latest: %s %q\n", orUnknown(t.ItemAuthor), orUnknown(t.ItemState), t.ItemLabels, len(t.ItemBody), orUnknown(t.LatestAuthor), trunc(t.LatestBody, 80))
+	} else {
+		fmt.Println("  (not enriched)")
+	}
+	if ex.Judgment == nil {
+		fmt.Println("  no judgment stored (run: ghinbox judge, or explain --now)")
+	} else {
+		stale := ""
+		if ex.Stale {
+			stale = " (STALE: thread changed since)"
+		}
+		fmt.Printf("  judged by %s %s at %s%s\n", ex.Judgment.Provider, ex.Judgment.Model, ex.Judgment.CreatedAt.Local().Format("Jan 02 15:04"), stale)
+		for _, q := range ex.Questions {
+			a, ok := ex.Answers[q.ID]
+			if !ok {
+				continue
+			}
+			switch a.Kind {
+			case "noul":
+				fmt.Printf("    %-24s %.2f\n", q.ID, a.Noul)
+			case "choice":
+				fmt.Printf("    %-24s %s (conf %.2f)  %s\n", q.ID, a.Choice, a.Confidence, probs(a.Probabilities))
+			case "score":
+				fmt.Printf("    %-24s %.2f/%d (conf %.2f)  %s\n", q.ID, a.Score, len(a.Legend)-1, a.Confidence, probs(a.Probabilities))
+			}
+		}
+	}
+	sc := ex.Score
+	fmt.Printf("  score: %d%% (priority %.2f) bucket %s pinned %v unsure %v category %s next %s\n", sc.Percent, sc.Priority, sc.Bucket, sc.Pinned, sc.Unsure, orUnknown(sc.Category), orUnknown(sc.NextAction))
+	return nil
+}
+
+func probs(m map[string]float64) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return m[keys[i]] > m[keys[j]] })
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%.2f", k, m[k]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func cmdSettings(ctx context.Context, args []string) error {
+	e, err := openEnv(false)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	st, err := e.pipe.JudgeSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 || args[0] == "show" {
+		fmt.Printf("provider:      %s\njev.model:     %s\njev.url:       %s\njev key:       %v\nollama.url:    %s\nollama.model:  %s\nmax:           %d\nconcurrency:   %d\ninterests:     %s\n",
+			st.Provider, st.JevModel, st.JevBaseURL, e.pipe.HasJevKey(), st.OllamaURL, orUnknown(st.OllamaJudgeModel), st.MaxPerRun, st.Concurrency, orUnknown(st.ProfileInterests))
+		return nil
+	}
+	if args[0] != "set" || len(args) < 3 {
+		return errors.New("settings: want show | set KEY VALUE")
+	}
+	key, val := args[1], strings.Join(args[2:], " ")
+	switch key {
+	case "provider":
+		switch val {
+		case "auto", "jev", "ollama", "off":
+			st.Provider = val
+		default:
+			return errors.New("provider must be auto|jev|ollama|off")
+		}
+	case "jev.model":
+		st.JevModel = val
+	case "jev.url":
+		st.JevBaseURL = val
+	case "ollama.url":
+		st.OllamaURL = val
+	case "ollama.model":
+		st.OllamaJudgeModel = val
+	case "interests":
+		st.ProfileInterests = val
+	case "max":
+		fmt.Sscanf(val, "%d", &st.MaxPerRun)
+	case "concurrency":
+		fmt.Sscanf(val, "%d", &st.Concurrency)
+	default:
+		return fmt.Errorf("settings: unknown key %q", key)
+	}
+	if err := e.pipe.SetJudgeSettings(ctx, st); err != nil {
+		return err
+	}
+	fmt.Printf("%s = %s\n", key, val)
+	return nil
+}
+
+func cmdJevKey(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("jev-key", flag.ContinueOnError)
+	file := fs.String("token-file", "", "file containing the Jev API key (first line); empty file removes the key")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *file == "" {
+		return errors.New("jev-key: --token-file is required")
+	}
+	raw, err := os.ReadFile(*file)
+	if err != nil {
+		return err
+	}
+	e, err := openEnv(false)
+	if err != nil {
+		return err
+	}
+	defer e.close()
+	key := strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0])
+	if err := e.pipe.SetJevKey(key); err != nil {
+		return err
+	}
+	if key == "" {
+		fmt.Println("Jev key removed")
+	} else {
+		fmt.Printf("Jev key stored in %s\n", e.sec.Backend())
+	}
 	return nil
 }
 
@@ -528,7 +845,7 @@ func cmdAction(ctx context.Context, action string, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s %s: ok (GitHub mirrored: %v)", action, id, res.Mirrored)
+	fmt.Printf("%s %s: ok (mirrored to %s: %v)", action, id, acct.Host, res.Mirrored)
 	if res.Warning != "" {
 		fmt.Printf(" — %s", res.Warning)
 	}

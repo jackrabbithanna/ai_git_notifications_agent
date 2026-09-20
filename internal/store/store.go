@@ -3,8 +3,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha1"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -172,75 +174,87 @@ func fromJSONStrings(s string) []string {
 
 // Account is a configured GitHub account (token lives in secrets, keyed by ID).
 type Account struct {
-	ID        int64     `json:"id"`
-	Login     string    `json:"login"`
-	Host      string    `json:"host"`
-	WriteMode string    `json:"writeMode"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID          int64     `json:"id"`
+	Forge       string    `json:"forge"` // github | gitlab
+	Login       string    `json:"login"`
+	Host        string    `json:"host"`
+	WriteMode   string    `json:"writeMode"`
+	TokenScopes string    `json:"tokenScopes"` // comma list learned at add time; "" = unknown
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// Forge identifiers.
+const (
+	ForgeGitHub = "github"
+	ForgeGitLab = "gitlab"
+)
+
+const accountColumns = `id, forge, login, host, write_mode, token_scopes, created_at`
+
+func scanAccount(sc interface{ Scan(...any) error }) (Account, error) {
+	var a Account
+	var created string
+	if err := sc.Scan(&a.ID, &a.Forge, &a.Login, &a.Host, &a.WriteMode, &a.TokenScopes, &created); err != nil {
+		return Account{}, err
+	}
+	a.CreatedAt = parseTime(created)
+	return a, nil
 }
 
 // ErrNotFound is returned when a row does not exist.
 var ErrNotFound = errors.New("store: not found")
 
 func (db *DB) ListAccounts(ctx context.Context) ([]Account, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, login, host, write_mode, created_at FROM accounts ORDER BY id`)
+	rows, err := db.QueryContext(ctx, `SELECT `+accountColumns+` FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Account
 	for rows.Next() {
-		var a Account
-		var created string
-		if err := rows.Scan(&a.ID, &a.Login, &a.Host, &a.WriteMode, &created); err != nil {
+		a, err := scanAccount(rows)
+		if err != nil {
 			return nil, err
 		}
-		a.CreatedAt = parseTime(created)
 		out = append(out, a)
 	}
 	return out, rows.Err()
 }
 
 func (db *DB) GetAccount(ctx context.Context, id int64) (Account, error) {
-	var a Account
-	var created string
-	err := db.QueryRowContext(ctx, `SELECT id, login, host, write_mode, created_at FROM accounts WHERE id = ?`, id).
-		Scan(&a.ID, &a.Login, &a.Host, &a.WriteMode, &created)
+	a, err := scanAccount(db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
-	if err != nil {
-		return Account{}, err
-	}
-	a.CreatedAt = parseTime(created)
-	return a, nil
+	return a, err
 }
 
-// FindAccount looks an account up by login (and host, "" meaning github.com).
+// FindAccount looks an account up by login and host ("" meaning github.com).
 func (db *DB) FindAccount(ctx context.Context, login, host string) (Account, error) {
 	if host == "" {
 		host = "github.com"
 	}
-	var a Account
-	var created string
-	err := db.QueryRowContext(ctx, `SELECT id, login, host, write_mode, created_at FROM accounts WHERE login = ? AND host = ?`, login, host).
-		Scan(&a.ID, &a.Login, &a.Host, &a.WriteMode, &created)
+	a, err := scanAccount(db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE login = ? AND host = ?`, login, host))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
-	if err != nil {
-		return Account{}, err
-	}
-	a.CreatedAt = parseTime(created)
-	return a, nil
+	return a, err
 }
 
-func (db *DB) InsertAccount(ctx context.Context, login, host string) (Account, error) {
+// InsertAccount registers an account in read-only write mode.
+func (db *DB) InsertAccount(ctx context.Context, forge, login, host string) (Account, error) {
+	if forge == "" {
+		forge = ForgeGitHub
+	}
 	if host == "" {
-		host = "github.com"
+		if forge == ForgeGitLab {
+			host = "gitlab.com"
+		} else {
+			host = "github.com"
+		}
 	}
 	now := time.Now()
-	res, err := db.ExecContext(ctx, `INSERT INTO accounts (login, host, write_mode, created_at) VALUES (?, ?, 'readonly', ?)`, login, host, fmtTime(now))
+	res, err := db.ExecContext(ctx, `INSERT INTO accounts (forge, login, host, write_mode, token_scopes, created_at) VALUES (?, ?, ?, 'readonly', '', ?)`, forge, login, host, fmtTime(now))
 	if err != nil {
 		return Account{}, err
 	}
@@ -251,7 +265,13 @@ func (db *DB) InsertAccount(ctx context.Context, login, host string) (Account, e
 	if _, err := db.ExecContext(ctx, `INSERT INTO sync_state (account_id) VALUES (?)`, id); err != nil {
 		return Account{}, err
 	}
-	return Account{ID: id, Login: login, Host: host, WriteMode: "readonly", CreatedAt: now.UTC()}, nil
+	return Account{ID: id, Forge: forge, Login: login, Host: host, WriteMode: "readonly", CreatedAt: now.UTC()}, nil
+}
+
+// SetAccountTokenScopes records the scopes learned for the account's token ("" = unknown).
+func (db *DB) SetAccountTokenScopes(ctx context.Context, id int64, scopes string) error {
+	_, err := db.ExecContext(ctx, `UPDATE accounts SET token_scopes = ? WHERE id = ?`, scopes, id)
+	return err
 }
 
 func (db *DB) DeleteAccount(ctx context.Context, id int64) error {
@@ -283,6 +303,7 @@ type Thread struct {
 	HTMLURL          string     `json:"htmlUrl"`
 	Title            string     `json:"title"`
 	Reason           string     `json:"reason"`
+	Actor            string     `json:"actor"` // login behind the latest activity, when known
 	Unread           bool       `json:"unread"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
 	LastReadAt       *time.Time `json:"lastReadAt"`
@@ -296,26 +317,52 @@ type Thread struct {
 	SnoozedUntil     *time.Time `json:"snoozedUntil"`
 	FirstSeenAt      time.Time  `json:"firstSeenAt"`
 	LastSyncedAt     time.Time  `json:"lastSyncedAt"`
+	Enrichment
+}
+
+// Enrichment is what the enrich step learned about the item and its latest activity.
+type Enrichment struct {
+	ItemAuthor      string     `json:"itemAuthor"`
+	ItemState       string     `json:"itemState"`
+	ItemDraft       bool       `json:"itemDraft"`
+	ItemLabels      []string   `json:"itemLabels"`
+	ItemBody        string     `json:"itemBody"`
+	LatestAuthor    string     `json:"latestAuthor"`
+	LatestBody      string     `json:"latestBody"`
+	LatestAt        *time.Time `json:"latestAt"`
+	EnrichedVersion string     `json:"enrichedVersion"` // Thread.Version() at enrichment time
+}
+
+// Version fingerprints the thread's GitHub/GitLab-visible state; judgments and
+// enrichment are keyed by it so new activity invalidates them (PLAN.md §3).
+func (t Thread) Version() string {
+	h := sha1.Sum([]byte(fmtTime(t.UpdatedAt) + "|" + t.LatestCommentURL + "|" + strconv.Itoa(boolInt(t.Unread))))
+	return hex.EncodeToString(h[:8])
 }
 
 // IsRead is true when GitHub or the user marked the thread read.
 func (t Thread) IsRead() bool { return !t.Unread || t.LocalReadAt != nil }
 
-const threadColumns = `account_id, thread_id, repo, subject_type, subject_url, subject_number, html_url, title, reason,
+const threadColumns = `account_id, thread_id, repo, subject_type, subject_url, subject_number, html_url, title, reason, actor,
 	unread, updated_at, last_read_at, latest_comment_url, activity_kind, relation_tags, filter_verdict, filter_reason,
-	local_read_at, done_at, snoozed_until, first_seen_at, last_synced_at`
+	local_read_at, done_at, snoozed_until, first_seen_at, last_synced_at,
+	item_author, item_state, item_draft, item_labels, item_body, latest_author, latest_body, latest_at, enriched_version`
 
 func scanThread(sc interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var unread int
-	var updated, tags, firstSeen, lastSynced string
-	var lastRead, localRead, done, snoozed sql.NullString
-	err := sc.Scan(&t.AccountID, &t.ThreadID, &t.Repo, &t.SubjectType, &t.SubjectURL, &t.SubjectNumber, &t.HTMLURL, &t.Title, &t.Reason,
+	var unread, draft int
+	var updated, tags, firstSeen, lastSynced, labels string
+	var lastRead, localRead, done, snoozed, latestAt sql.NullString
+	err := sc.Scan(&t.AccountID, &t.ThreadID, &t.Repo, &t.SubjectType, &t.SubjectURL, &t.SubjectNumber, &t.HTMLURL, &t.Title, &t.Reason, &t.Actor,
 		&unread, &updated, &lastRead, &t.LatestCommentURL, &t.ActivityKind, &tags, &t.FilterVerdict, &t.FilterReason,
-		&localRead, &done, &snoozed, &firstSeen, &lastSynced)
+		&localRead, &done, &snoozed, &firstSeen, &lastSynced,
+		&t.ItemAuthor, &t.ItemState, &draft, &labels, &t.ItemBody, &t.LatestAuthor, &t.LatestBody, &latestAt, &t.EnrichedVersion)
 	if err != nil {
 		return Thread{}, err
 	}
+	t.ItemDraft = draft != 0
+	t.ItemLabels = fromJSONStrings(labels)
+	t.LatestAt = parseTimePtr(latestAt)
 	t.Unread = unread != 0
 	t.UpdatedAt = parseTime(updated)
 	t.LastReadAt = parseTimePtr(lastRead)
@@ -341,11 +388,11 @@ func (db *DB) UpsertThread(ctx context.Context, t Thread) error {
 	}
 	_, err := db.ExecContext(ctx, `
 INSERT INTO threads (`+threadColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, '', '', 0, '[]', '', '', '', NULL, '')
 ON CONFLICT (account_id, thread_id) DO UPDATE SET
   repo = excluded.repo, subject_type = excluded.subject_type, subject_url = excluded.subject_url,
   subject_number = excluded.subject_number, html_url = excluded.html_url, title = excluded.title,
-  reason = excluded.reason, unread = excluded.unread, updated_at = excluded.updated_at,
+  reason = excluded.reason, actor = excluded.actor, unread = excluded.unread, updated_at = excluded.updated_at,
   last_read_at = excluded.last_read_at, latest_comment_url = excluded.latest_comment_url,
   activity_kind = excluded.activity_kind, relation_tags = excluded.relation_tags,
   filter_verdict = excluded.filter_verdict, filter_reason = excluded.filter_reason,
@@ -353,7 +400,7 @@ ON CONFLICT (account_id, thread_id) DO UPDATE SET
   done_at       = CASE WHEN excluded.updated_at > threads.updated_at THEN NULL ELSE threads.done_at END,
   snoozed_until = CASE WHEN excluded.updated_at > threads.updated_at THEN NULL ELSE threads.snoozed_until END,
   last_synced_at = excluded.last_synced_at`,
-		t.AccountID, t.ThreadID, t.Repo, t.SubjectType, t.SubjectURL, t.SubjectNumber, t.HTMLURL, t.Title, t.Reason,
+		t.AccountID, t.ThreadID, t.Repo, t.SubjectType, t.SubjectURL, t.SubjectNumber, t.HTMLURL, t.Title, t.Reason, t.Actor,
 		boolInt(t.Unread), fmtTime(t.UpdatedAt), fmtTimePtr(t.LastReadAt), t.LatestCommentURL, t.ActivityKind, toJSON(t.RelationTags),
 		t.FilterVerdict, t.FilterReason, fmtTime(t.FirstSeenAt), fmtTime(t.LastSyncedAt))
 	return err
@@ -468,6 +515,247 @@ func (db *DB) setLocal(ctx context.Context, accountID int64, threadID, set strin
 		return ErrNotFound
 	}
 	return nil
+}
+
+// MarkThreadsReadExcept flips unread=0 for the account's threads whose id starts
+// with prefix and is not in keep — used to reconcile GitLab to-dos completed
+// elsewhere (the pending list is authoritative).
+func (db *DB) MarkThreadsReadExcept(ctx context.Context, accountID int64, prefix string, keep []string) (int64, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS keep_ids (id TEXT PRIMARY KEY)`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM keep_ids`); err != nil {
+		return 0, err
+	}
+	for _, id := range keep {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO keep_ids (id) VALUES (?)`, id); err != nil {
+			return 0, err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE threads SET unread = 0 WHERE account_id = ? AND unread = 1 AND thread_id LIKE ? || '%' AND thread_id NOT IN (SELECT id FROM keep_ids)`, accountID, prefix)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, tx.Commit()
+}
+
+// SetThreadEnrichment stores what the enrich step learned, tagged with the version it saw.
+func (db *DB) SetThreadEnrichment(ctx context.Context, accountID int64, threadID string, e Enrichment) error {
+	res, err := db.ExecContext(ctx, `UPDATE threads SET item_author = ?, item_state = ?, item_draft = ?, item_labels = ?, item_body = ?,
+		latest_author = ?, latest_body = ?, latest_at = ?, enriched_version = ? WHERE account_id = ? AND thread_id = ?`,
+		e.ItemAuthor, e.ItemState, boolInt(e.ItemDraft), toJSON(e.ItemLabels), e.ItemBody, e.LatestAuthor, e.LatestBody, fmtTimePtr(e.LatestAt), e.EnrichedVersion,
+		accountID, threadID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- judgments --------------------------------------------------------------
+
+// Judgment is one stored judge response for a thread version.
+type Judgment struct {
+	AccountID        int64           `json:"accountId"`
+	ThreadID         string          `json:"threadId"`
+	ThreadVersion    string          `json:"threadVersion"`
+	QuestionsVersion string          `json:"questionsVersion"`
+	Provider         string          `json:"provider"`
+	Model            string          `json:"model"`
+	Calibrated       bool            `json:"calibrated"`
+	AnswersJSON      json.RawMessage `json:"answers"`
+	UsageJSON        json.RawMessage `json:"usage"`
+	LatencyMs        int64           `json:"latencyMs"`
+	CreatedAt        time.Time       `json:"createdAt"`
+}
+
+func (db *DB) PutJudgment(ctx context.Context, j Judgment) error {
+	if len(j.UsageJSON) == 0 {
+		j.UsageJSON = json.RawMessage("{}")
+	}
+	_, err := db.ExecContext(ctx, `
+INSERT INTO judgments (account_id, thread_id, thread_version, questions_version, provider, model, calibrated, answers_json, usage_json, latency_ms, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (account_id, thread_id, questions_version) DO UPDATE SET thread_version = excluded.thread_version, provider = excluded.provider,
+  model = excluded.model, calibrated = excluded.calibrated, answers_json = excluded.answers_json, usage_json = excluded.usage_json,
+  latency_ms = excluded.latency_ms, created_at = excluded.created_at`,
+		j.AccountID, j.ThreadID, j.ThreadVersion, j.QuestionsVersion, j.Provider, j.Model, boolInt(j.Calibrated), string(j.AnswersJSON), string(j.UsageJSON), j.LatencyMs, fmtTime(time.Now()))
+	return err
+}
+
+const judgmentColumns = `account_id, thread_id, thread_version, questions_version, provider, model, calibrated, answers_json, usage_json, latency_ms, created_at`
+
+func scanJudgment(sc interface{ Scan(...any) error }) (Judgment, error) {
+	var j Judgment
+	var cal int
+	var answers, usage, created string
+	if err := sc.Scan(&j.AccountID, &j.ThreadID, &j.ThreadVersion, &j.QuestionsVersion, &j.Provider, &j.Model, &cal, &answers, &usage, &j.LatencyMs, &created); err != nil {
+		return Judgment{}, err
+	}
+	j.Calibrated = cal != 0
+	j.AnswersJSON = json.RawMessage(answers)
+	j.UsageJSON = json.RawMessage(usage)
+	j.CreatedAt = parseTime(created)
+	return j, nil
+}
+
+func (db *DB) GetJudgment(ctx context.Context, accountID int64, threadID, questionsVersion string) (Judgment, error) {
+	j, err := scanJudgment(db.QueryRowContext(ctx, `SELECT `+judgmentColumns+` FROM judgments WHERE account_id = ? AND thread_id = ? AND questions_version = ?`, accountID, threadID, questionsVersion))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Judgment{}, ErrNotFound
+	}
+	return j, err
+}
+
+// ListJudgments returns judgments for a question set keyed by "<account>:<thread>" (accountID 0 = all).
+func (db *DB) ListJudgments(ctx context.Context, accountID int64, questionsVersion string) (map[string]Judgment, error) {
+	q := `SELECT ` + judgmentColumns + ` FROM judgments WHERE questions_version = ?`
+	args := []any{questionsVersion}
+	if accountID != 0 {
+		q += " AND account_id = ?"
+		args = append(args, accountID)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Judgment{}
+	for rows.Next() {
+		j, err := scanJudgment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[JudgmentKey(j.AccountID, j.ThreadID)] = j
+	}
+	return out, rows.Err()
+}
+
+// JudgmentKey is the map key used by ListJudgments.
+func JudgmentKey(accountID int64, threadID string) string {
+	return strconv.FormatInt(accountID, 10) + ":" + threadID
+}
+
+// JudgeCandidates returns visible, unread, kept threads whose judgment for the
+// question set is missing or stale, newest first, up to limit.
+func (db *DB) JudgeCandidates(ctx context.Context, accountID int64, questionsVersion string, limit int) ([]Thread, error) {
+	threads, err := db.ListThreads(ctx, ThreadQuery{AccountID: accountID, Limit: limit * 3})
+	if err != nil {
+		return nil, err
+	}
+	have, err := db.ListJudgments(ctx, accountID, questionsVersion)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Thread, 0, limit)
+	for _, t := range threads {
+		if j, ok := have[JudgmentKey(t.AccountID, t.ThreadID)]; ok && j.ThreadVersion == t.Version() {
+			continue
+		}
+		out = append(out, t)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// JudgmentStats summarises stored judgments for Diagnostics.
+type JudgmentStats struct {
+	Total        int            `json:"total"`
+	ByProvider   map[string]int `json:"byProvider"`
+	InputTokens  int64          `json:"inputTokens"`
+	OutputTokens int64          `json:"outputTokens"`
+}
+
+func (db *DB) JudgmentStatsFor(ctx context.Context, questionsVersion string) (JudgmentStats, error) {
+	st := JudgmentStats{ByProvider: map[string]int{}}
+	rows, err := db.QueryContext(ctx, `SELECT provider, COUNT(*), COALESCE(SUM(json_extract(usage_json, '$.inputTokens')), 0), COALESCE(SUM(json_extract(usage_json, '$.outputTokens')), 0) FROM judgments WHERE questions_version = ? GROUP BY provider`, questionsVersion)
+	if err != nil {
+		return st, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		var n int
+		var in, out int64
+		if err := rows.Scan(&p, &n, &in, &out); err != nil {
+			return st, err
+		}
+		st.ByProvider[p] = n
+		st.Total += n
+		st.InputTokens += in
+		st.OutputTokens += out
+	}
+	return st, rows.Err()
+}
+
+// --- watched projects (GitLab) ---------------------------------------------
+
+// WatchedProject is a project whose activity is polled for an account.
+type WatchedProject struct {
+	AccountID   int64      `json:"accountId"`
+	Path        string     `json:"path"`
+	ProjectID   int64      `json:"projectId"`
+	LastEventAt *time.Time `json:"lastEventAt"`
+	LastError   string     `json:"lastError"`
+	CreatedAt   time.Time  `json:"createdAt"`
+}
+
+func (db *DB) ListWatched(ctx context.Context, accountID int64) ([]WatchedProject, error) {
+	rows, err := db.QueryContext(ctx, `SELECT account_id, path, project_id, last_event_at, last_error, created_at FROM watched_projects WHERE account_id = ? ORDER BY path`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WatchedProject
+	for rows.Next() {
+		var w WatchedProject
+		var last sql.NullString
+		var created string
+		if err := rows.Scan(&w.AccountID, &w.Path, &w.ProjectID, &last, &w.LastError, &created); err != nil {
+			return nil, err
+		}
+		w.LastEventAt = parseTimePtr(last)
+		w.CreatedAt = parseTime(created)
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) AddWatched(ctx context.Context, accountID int64, path string) error {
+	path = strings.Trim(strings.TrimSpace(path), "/")
+	if path == "" {
+		return errors.New("store: empty project path")
+	}
+	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO watched_projects (account_id, path, created_at) VALUES (?, ?, ?)`, accountID, path, fmtTime(time.Now()))
+	return err
+}
+
+func (db *DB) RemoveWatched(ctx context.Context, accountID int64, path string) error {
+	res, err := db.ExecContext(ctx, `DELETE FROM watched_projects WHERE account_id = ? AND path = ?`, accountID, path)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateWatched stores the resolved project id, the newest event time seen, and the last error.
+func (db *DB) UpdateWatched(ctx context.Context, accountID int64, path string, projectID int64, lastEventAt *time.Time, lastErr string) error {
+	_, err := db.ExecContext(ctx, `UPDATE watched_projects SET project_id = ?, last_event_at = COALESCE(?, last_event_at), last_error = ? WHERE account_id = ? AND path = ?`,
+		projectID, fmtTimePtr(lastEventAt), lastErr, accountID, path)
+	return err
 }
 
 // --- items ("mine") ---------------------------------------------------------

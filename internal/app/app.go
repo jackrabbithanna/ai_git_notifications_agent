@@ -15,6 +15,7 @@ import (
 	"ghinbox/internal/mcpbin"
 	"ghinbox/internal/pipeline"
 	"ghinbox/internal/secrets"
+	gitlabsrc "ghinbox/internal/source/gitlab"
 	"ghinbox/internal/store"
 )
 
@@ -70,6 +71,7 @@ func Open(emit func(name string, data any)) (*App, error) {
 		Emit:      emit,
 		ServerLog: logSink,
 	})
+	a.Pipe.SetGitLabFactory(gitlabsrc.Factory())
 	return a, nil
 }
 

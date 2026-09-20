@@ -63,7 +63,7 @@ func (s *DiagnosticsService) Tools(accountID int64) ([]ghmcp.ToolInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := s.App.Pipe.Client(ctx, acct)
+	client, err := s.App.Pipe.MCPClient(ctx, acct)
 	if err != nil {
 		return nil, err
 	}

@@ -7,6 +7,7 @@ import (
 
 	"ghinbox/internal/app"
 	"ghinbox/internal/pipeline"
+	"ghinbox/internal/scoring"
 	"ghinbox/internal/store"
 )
 
@@ -25,18 +26,22 @@ type InboxQuery struct {
 	Limit        int    `json:"limit"`
 }
 
-// Group is one Inbox section (by activity kind), newest first.
+// Group is one Inbox section: a "needs me" bucket first (judged threads that
+// require action or are pinned), then activity kinds. Threads are ordered by
+// priority within a group (PLAN.md §4.6).
 type Group struct {
-	Kind    string         `json:"kind"`
-	Label   string         `json:"label"`
-	Threads []store.Thread `json:"threads"`
+	Kind    string            `json:"kind"`
+	Label   string            `json:"label"`
+	Threads []pipeline.Scored `json:"threads"`
 }
 
 // InboxView is the grouped inbox plus counts.
 type InboxView struct {
-	Groups []Group      `json:"groups"`
-	Counts store.Counts `json:"counts"`
-	Total  int          `json:"total"`
+	Groups   []Group      `json:"groups"`
+	Counts   store.Counts `json:"counts"`
+	Total    int          `json:"total"`
+	Judged   int          `json:"judged"`
+	Unjudged int          `json:"unjudged"`
 }
 
 var kindOrder = []struct{ Kind, Label string }{
@@ -68,14 +73,47 @@ func (s *InboxService) List(q InboxQuery) (InboxView, error) {
 	if err != nil {
 		return InboxView{}, err
 	}
-	byKind := map[string][]store.Thread{}
-	for _, t := range threads {
-		byKind[t.ActivityKind] = append(byKind[t.ActivityKind], t)
+	scored, err := s.App.Pipe.ScoreThreads(ctx, threads)
+	if err != nil {
+		return InboxView{}, err
 	}
 	view := InboxView{Total: len(threads)}
+	var needsMe, resolved []pipeline.Scored
+	byKind := map[string][]pipeline.Scored{}
+	for _, sc := range scored {
+		if sc.Score.Judged {
+			view.Judged++
+		} else {
+			view.Unjudged++
+		}
+		switch {
+		case sc.Score.Pinned || sc.Score.Bucket == scoring.BucketNeedsMe:
+			needsMe = append(needsMe, sc)
+		case sc.Score.Bucket == scoring.BucketResolved:
+			resolved = append(resolved, sc)
+		default:
+			byKind[sc.Thread.ActivityKind] = append(byKind[sc.Thread.ActivityKind], sc)
+		}
+	}
+	byPriority := func(ts []pipeline.Scored) {
+		sort.SliceStable(ts, func(i, j int) bool {
+			if ts[i].Score.Pinned != ts[j].Score.Pinned {
+				return ts[i].Score.Pinned
+			}
+			if ts[i].Score.Priority != ts[j].Score.Priority {
+				return ts[i].Score.Priority > ts[j].Score.Priority
+			}
+			return ts[i].Thread.UpdatedAt.After(ts[j].Thread.UpdatedAt)
+		})
+	}
+	if len(needsMe) > 0 {
+		byPriority(needsMe)
+		view.Groups = append(view.Groups, Group{Kind: "needs_me", Label: "Needs me", Threads: needsMe})
+	}
 	seen := map[string]bool{}
 	for _, k := range kindOrder {
 		if ts := byKind[k.Kind]; len(ts) > 0 {
+			byPriority(ts)
 			view.Groups = append(view.Groups, Group{Kind: k.Kind, Label: k.Label, Threads: ts})
 		}
 		seen[k.Kind] = true
@@ -88,7 +126,12 @@ func (s *InboxService) List(q InboxQuery) (InboxView, error) {
 	}
 	sort.Strings(extra)
 	for _, k := range extra {
+		byPriority(byKind[k])
 		view.Groups = append(view.Groups, Group{Kind: k, Label: k, Threads: byKind[k]})
+	}
+	if len(resolved) > 0 {
+		byPriority(resolved)
+		view.Groups = append(view.Groups, Group{Kind: "resolved", Label: "Resolved (judged)", Threads: resolved})
 	}
 	view.Counts, err = s.App.DB.Counts(ctx, q.AccountID)
 	return view, err

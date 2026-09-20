@@ -9,13 +9,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"ghinbox/internal/classify"
 	"ghinbox/internal/filter"
 	"ghinbox/internal/ghmcp"
+	"ghinbox/internal/judge"
 	"ghinbox/internal/secrets"
+	"ghinbox/internal/source"
+	githubsrc "ghinbox/internal/source/github"
 	"ghinbox/internal/store"
 )
 
@@ -34,9 +38,22 @@ type Pipeline struct {
 	deps Deps
 
 	mu      sync.Mutex
-	clients map[int64]*ghmcp.Client
+	sources map[int64]source.Source
 	syncing map[int64]bool
+
+	// newGitLab builds a GitLab source; set by the gitlab package wiring so this
+	// package does not import client-go directly (see SetGitLabFactory).
+	newGitLab func(acct store.Account, token string) (source.Source, error)
+
+	// judgeOverride replaces the configured provider (tests, dry runs).
+	judgeOverride judge.Judge
 }
+
+// GitLabFactory builds a GitLab Source for an account (registered by main/CLI).
+type GitLabFactory func(acct store.Account, token string) (source.Source, error)
+
+// SetGitLabFactory installs the GitLab source constructor.
+func (p *Pipeline) SetGitLabFactory(f GitLabFactory) { p.newGitLab = f }
 
 // New wires a Pipeline. Nothing is started until an account is used.
 func New(deps Deps) *Pipeline {
@@ -46,16 +63,16 @@ func New(deps Deps) *Pipeline {
 	if deps.Emit == nil {
 		deps.Emit = func(string, any) {}
 	}
-	return &Pipeline{deps: deps, clients: map[int64]*ghmcp.Client{}, syncing: map[int64]bool{}}
+	return &Pipeline{deps: deps, sources: map[int64]source.Source{}, syncing: map[int64]bool{}}
 }
 
 // Close stops every server process.
 func (p *Pipeline) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for id, c := range p.clients {
-		_ = c.Close()
-		delete(p.clients, id)
+	for id, s := range p.sources {
+		_ = s.Close()
+		delete(p.sources, id)
 	}
 }
 
@@ -74,69 +91,114 @@ const FullSyncWindow = 7 * 24 * time.Hour
 
 // --- clients & accounts -----------------------------------------------------
 
-func (p *Pipeline) newClient(acct store.Account, token string) *ghmcp.Client {
+func (p *Pipeline) newSource(acct store.Account, token string) (source.Source, error) {
 	mode, err := ghmcp.ParseWriteMode(acct.WriteMode)
 	if err != nil {
 		p.deps.Logger.Warn("invalid write mode; using readonly", "account", acct.Login, "mode", acct.WriteMode)
 		mode = ghmcp.WriteModeReadOnly
 	}
-	host := acct.Host
-	if host == "github.com" {
-		host = ""
+	switch acct.Forge {
+	case "", store.ForgeGitHub:
+		host := acct.Host
+		if host == "github.com" {
+			host = ""
+		}
+		return githubsrc.New(githubsrc.Config{
+			BinaryPath: p.deps.MCPPath,
+			Token:      token,
+			Host:       host,
+			WriteMode:  mode,
+			Stderr:     p.deps.ServerLog,
+		}), nil
+	case store.ForgeGitLab:
+		if p.newGitLab == nil {
+			return nil, errors.New("gitlab source not available in this build")
+		}
+		return p.newGitLab(acct, token)
 	}
-	return ghmcp.New(ghmcp.Config{
-		BinaryPath: p.deps.MCPPath,
-		Token:      token,
-		Host:       host,
-		WriteMode:  mode,
-		Stderr:     p.deps.ServerLog,
-	})
+	return nil, fmt.Errorf("unsupported forge %q", acct.Forge)
 }
 
-// Client returns the (lazily started) MCP client for an account. A client whose
-// write mode no longer matches the account is replaced.
-func (p *Pipeline) Client(ctx context.Context, acct store.Account) (*ghmcp.Client, error) {
+// Source returns the (lazily started) forge connection for an account. A source
+// whose write mode no longer matches the account is replaced.
+func (p *Pipeline) Source(ctx context.Context, acct store.Account) (source.Source, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if c, ok := p.clients[acct.ID]; ok {
-		if string(c.Config().WriteMode) == acct.WriteMode {
-			return c, nil
+	if s, ok := p.sources[acct.ID]; ok {
+		if m, ok := s.(interface{ WriteMode() string }); !ok || m.WriteMode() == acct.WriteMode {
+			return s, nil
 		}
-		_ = c.Close()
-		delete(p.clients, acct.ID)
+		_ = s.Close()
+		delete(p.sources, acct.ID)
 	}
 	token, err := p.deps.Secrets.Get(secrets.AccountKey(acct.ID))
 	if err != nil {
 		return nil, fmt.Errorf("token for %s: %w", acct.Login, err)
 	}
-	c := p.newClient(acct, token)
-	if err := c.Start(ctx); err != nil {
+	s, err := p.newSource(acct, token)
+	if err != nil {
 		return nil, err
 	}
-	p.clients[acct.ID] = c
-	return c, nil
+	p.sources[acct.ID] = s
+	return s, nil
 }
 
-// AddAccount validates a token via get_me, stores it, and registers the account.
-func (p *Pipeline) AddAccount(ctx context.Context, token, host string) (store.Account, error) {
-	if host == "" || host == "api.github.com" {
-		host = "github.com"
+// MCPClient returns the GitHub MCP client behind an account (Diagnostics), or an
+// error for non-GitHub accounts.
+func (p *Pipeline) MCPClient(ctx context.Context, acct store.Account) (*ghmcp.Client, error) {
+	s, err := p.Source(ctx, acct)
+	if err != nil {
+		return nil, err
 	}
-	probe := p.newClient(store.Account{Login: "?", Host: host, WriteMode: string(ghmcp.WriteModeReadOnly)}, token)
-	me, err := probe.GetMe(ctx)
+	if m, ok := s.(interface{ MCP() *ghmcp.Client }); ok {
+		return m.MCP(), nil
+	}
+	return nil, fmt.Errorf("account %s (%s) has no MCP server", acct.Login, acct.Forge)
+}
+
+// AddAccount validates a token against the forge, stores it, and registers the account.
+func (p *Pipeline) AddAccount(ctx context.Context, forge, token, host string) (store.Account, error) {
+	if forge == "" {
+		forge = store.ForgeGitHub
+	}
+	switch host {
+	case "", "api.github.com":
+		if forge == store.ForgeGitLab {
+			host = "gitlab.com"
+		} else {
+			host = "github.com"
+		}
+	}
+	probe, err := p.newSource(store.Account{Forge: forge, Login: "?", Host: host, WriteMode: string(ghmcp.WriteModeReadOnly)}, token)
+	if err != nil {
+		return store.Account{}, err
+	}
+	login, err := probe.Login(ctx)
+	scopes := ""
+	if err == nil {
+		if sr, ok := probe.(source.ScopeReporter); ok {
+			if sc, serr := sr.TokenScopes(ctx); serr == nil {
+				scopes = sc
+			} else {
+				p.deps.Logger.Info("token scopes unavailable", "host", host, "err", serr)
+			}
+		}
+	}
 	_ = probe.Close()
 	if err != nil {
 		return store.Account{}, fmt.Errorf("token check failed: %w", err)
 	}
-	if existing, err := p.deps.DB.FindAccount(ctx, me.Login, host); err == nil {
+	if existing, err := p.deps.DB.FindAccount(ctx, login, host); err == nil {
 		// Re-adding an existing account rotates its token.
 		if err := p.deps.Secrets.Set(secrets.AccountKey(existing.ID), token); err != nil {
 			return store.Account{}, err
 		}
-		p.dropClient(existing.ID)
+		_ = p.deps.DB.SetAccountTokenScopes(ctx, existing.ID, scopes)
+		p.dropSource(existing.ID)
+		existing.TokenScopes = scopes
 		return existing, nil
 	}
-	acct, err := p.deps.DB.InsertAccount(ctx, me.Login, host)
+	acct, err := p.deps.DB.InsertAccount(ctx, forge, login, host)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -144,20 +206,24 @@ func (p *Pipeline) AddAccount(ctx context.Context, token, host string) (store.Ac
 		_ = p.deps.DB.DeleteAccount(ctx, acct.ID)
 		return store.Account{}, fmt.Errorf("store token: %w", err)
 	}
+	if scopes != "" {
+		_ = p.deps.DB.SetAccountTokenScopes(ctx, acct.ID, scopes)
+		acct.TokenScopes = scopes
+	}
 	return acct, nil
 }
 
 // RemoveAccount deletes the account, its data, and its token.
 func (p *Pipeline) RemoveAccount(ctx context.Context, id int64) error {
-	p.dropClient(id)
+	p.dropSource(id)
 	if err := p.deps.DB.DeleteAccount(ctx, id); err != nil {
 		return err
 	}
 	return p.deps.Secrets.Delete(secrets.AccountKey(id))
 }
 
-// SetWriteMode changes the account's GitHub write policy and restarts its server
-// so the --read-only flag matches (PLAN.md §4.9).
+// SetWriteMode changes the account's write policy and restarts its source so
+// the server flag / in-code guard matches (PLAN.md §4.9).
 func (p *Pipeline) SetWriteMode(ctx context.Context, id int64, mode string) error {
 	if _, err := ghmcp.ParseWriteMode(mode); err != nil {
 		return err
@@ -165,26 +231,28 @@ func (p *Pipeline) SetWriteMode(ctx context.Context, id int64, mode string) erro
 	if err := p.deps.DB.SetAccountWriteMode(ctx, id, mode); err != nil {
 		return err
 	}
-	p.dropClient(id)
+	p.dropSource(id)
 	return nil
 }
 
-func (p *Pipeline) dropClient(id int64) {
+func (p *Pipeline) dropSource(id int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if c, ok := p.clients[id]; ok {
-		_ = c.Close()
-		delete(p.clients, id)
+	if s, ok := p.sources[id]; ok {
+		_ = s.Close()
+		delete(p.sources, id)
 	}
 }
 
-// ClientStats returns per-account MCP counters for Diagnostics.
+// ClientStats returns per-account MCP counters (GitHub accounts) for Diagnostics.
 func (p *Pipeline) ClientStats() map[int64]ghmcp.Stats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make(map[int64]ghmcp.Stats, len(p.clients))
-	for id, c := range p.clients {
-		out[id] = c.Stats()
+	out := make(map[int64]ghmcp.Stats, len(p.sources))
+	for id, s := range p.sources {
+		if m, ok := s.(interface{ MCP() *ghmcp.Client }); ok {
+			out[id] = m.MCP().Stats()
+		}
 	}
 	return out
 }
@@ -219,6 +287,7 @@ type SyncReport struct {
 	MineSynced bool          `json:"mineSynced"`
 	MineItems  int           `json:"mineItems"`
 	Duration   time.Duration `json:"duration"`
+	Warnings   []string      `json:"warnings"`
 	Error      string        `json:"error"`
 }
 
@@ -268,7 +337,7 @@ func (p *Pipeline) SyncAccount(ctx context.Context, acct store.Account, full boo
 		return rep, err
 	}
 
-	client, err := p.Client(ctx, acct)
+	src, err := p.Source(ctx, acct)
 	if err != nil {
 		return fail(err)
 	}
@@ -281,44 +350,70 @@ func (p *Pipeline) SyncAccount(ctx context.Context, acct store.Account, full boo
 		full = true
 	}
 	rep.Full = full
-	opts := ghmcp.ListNotificationsOpts{PerPage: 50}
+	opts := source.Opts{AccountID: acct.ID, Host: acct.Host, Full: full}
 	if full {
-		opts.Filter = "include_read_notifications"
 		opts.Since = start.Add(-FullSyncWindow)
-	} else {
-		opts.Filter = "default"
-		if state.LastSince != nil {
-			opts.Since = state.LastSince.Add(-10 * time.Minute)
-		}
+	} else if state.LastSince != nil {
+		opts.Since = state.LastSince.Add(-10 * time.Minute)
 	}
 
-	host := ""
-	if acct.Host != "github.com" {
-		host = acct.Host
+	res, err := src.Notifications(ctx, opts)
+	if err != nil {
+		return fail(err)
 	}
-	for page := 1; page <= 40; page++ {
-		opts.Page = page
-		batch, err := client.ListNotifications(ctx, opts)
+	rep.Warnings = append(rep.Warnings, res.Warnings...)
+	for _, t := range res.Threads {
+		rep.Fetched++
+		isNew, isNoise, err := p.storeThread(ctx, rules, t)
 		if err != nil {
 			return fail(err)
 		}
-		for _, n := range batch {
-			rep.Fetched++
-			isNew, isNoise, err := p.storeNotification(ctx, acct, host, rules, n)
+		if isNew {
+			rep.New++
+		} else {
+			rep.Updated++
+		}
+		if isNoise {
+			rep.Noise++
+		}
+	}
+	if res.ReadExcept != nil {
+		if _, err := p.deps.DB.MarkThreadsReadExcept(ctx, acct.ID, res.ReadExcept.Prefix, res.ReadExcept.IDs); err != nil {
+			return fail(err)
+		}
+	}
+
+	if w, ok := src.(source.Watcher); ok {
+		watched, err := p.deps.DB.ListWatched(ctx, acct.ID)
+		if err != nil {
+			return fail(err)
+		}
+		if len(watched) > 0 {
+			threads, updates, warns, err := w.SyncWatched(ctx, watched, acct.ID)
 			if err != nil {
 				return fail(err)
 			}
-			if isNew {
-				rep.New++
-			} else {
-				rep.Updated++
+			rep.Warnings = append(rep.Warnings, warns...)
+			for _, t := range threads {
+				rep.Fetched++
+				isNew, isNoise, err := p.storeThread(ctx, rules, t)
+				if err != nil {
+					return fail(err)
+				}
+				if isNew {
+					rep.New++
+				} else {
+					rep.Updated++
+				}
+				if isNoise {
+					rep.Noise++
+				}
 			}
-			if isNoise {
-				rep.Noise++
+			for _, u := range updates {
+				if err := p.deps.DB.UpdateWatched(ctx, acct.ID, u.Path, u.ProjectID, u.LastEventAt, u.Err); err != nil {
+					return fail(err)
+				}
 			}
-		}
-		if len(batch) < opts.PerPage {
-			break
 		}
 	}
 
@@ -331,7 +426,7 @@ func (p *Pipeline) SyncAccount(ctx context.Context, acct store.Account, full boo
 	state.LastError = ""
 
 	if state.LastMineAt == nil || now.Sub(*state.LastMineAt) >= SyncMineEvery {
-		n, run, err := p.syncMine(ctx, client, acct, state.MineRun+1)
+		n, run, err := p.syncMine(ctx, src, acct, state.MineRun+1)
 		if err != nil {
 			// Mine is secondary; report but keep the notification sync result.
 			p.deps.Logger.Warn("mine sync failed", "account", acct.Login, "err", err)
@@ -368,58 +463,26 @@ func (p *Pipeline) endSync(id int64) {
 	delete(p.syncing, id)
 }
 
-// storeNotification classifies, filters and upserts one thread. Returns whether it
-// was new to the store and whether it was judged noise.
-func (p *Pipeline) storeNotification(ctx context.Context, acct store.Account, host string, rules filter.Rules, n ghmcp.Notification) (isNew, isNoise bool, err error) {
-	res := classify.Classify(n)
-	v := filter.Apply(rules, filter.Input{Repo: n.Repo, Title: n.Title, Reason: n.Reason, Kind: res.Kind})
-	verdict := "keep"
+// storeThread filters and upserts one classified thread. Returns whether it was
+// new to the store and whether it was judged noise.
+func (p *Pipeline) storeThread(ctx context.Context, rules filter.Rules, t store.Thread) (isNew, isNoise bool, err error) {
+	v := filter.Apply(rules, filter.Input{Repo: t.Repo, Title: t.Title, Reason: t.Reason, Kind: classifyKind(t.ActivityKind)})
+	t.FilterVerdict = "keep"
 	if !v.Keep {
-		verdict = "noise"
+		t.FilterVerdict = "noise"
 	}
-	if _, err := p.deps.DB.GetThread(ctx, acct.ID, n.ID); errors.Is(err, store.ErrNotFound) {
+	t.FilterReason = v.Reason
+	if _, err := p.deps.DB.GetThread(ctx, t.AccountID, t.ThreadID); errors.Is(err, store.ErrNotFound) {
 		isNew = true
 	} else if err != nil {
 		return false, false, err
 	}
-	t := store.Thread{
-		AccountID:        acct.ID,
-		ThreadID:         n.ID,
-		Repo:             n.Repo,
-		SubjectType:      n.SubjectType,
-		SubjectURL:       n.SubjectURL,
-		SubjectNumber:    n.SubjectNumber(),
-		HTMLURL:          classify.HTMLURL(host, n),
-		Title:            n.Title,
-		Reason:           n.Reason,
-		Unread:           n.Unread,
-		UpdatedAt:        n.UpdatedAt,
-		LastReadAt:       n.LastReadAt,
-		LatestCommentURL: n.LatestCommentURL,
-		ActivityKind:     string(res.Kind),
-		RelationTags:     res.RelationTags,
-		FilterVerdict:    verdict,
-		FilterReason:     v.Reason,
-	}
 	return isNew, !v.Keep, p.deps.DB.UpsertThread(ctx, t)
-}
-
-// mineQueries are the "mine" searches per account; review requests only exist for PRs.
-var mineQueries = []struct {
-	Relation string
-	Query    string
-	Issues   bool
-	PRs      bool
-}{
-	{"assigned", "assignee:@me is:open", true, true},
-	{"mentioned", "mentions:@me is:open", true, true},
-	{"review_requested", "review-requested:@me is:open", false, true},
-	{"author", "author:@me is:open", true, true},
 }
 
 // SyncMine refreshes the account's assigned/mentioned/review-requested/authored items now.
 func (p *Pipeline) SyncMine(ctx context.Context, acct store.Account) (int, error) {
-	client, err := p.Client(ctx, acct)
+	src, err := p.Source(ctx, acct)
 	if err != nil {
 		return 0, err
 	}
@@ -427,7 +490,7 @@ func (p *Pipeline) SyncMine(ctx context.Context, acct store.Account) (int, error
 	if err != nil {
 		return 0, err
 	}
-	n, run, err := p.syncMine(ctx, client, acct, state.MineRun+1)
+	n, run, err := p.syncMine(ctx, src, acct, state.MineRun+1)
 	if err != nil {
 		return 0, err
 	}
@@ -441,63 +504,21 @@ func (p *Pipeline) SyncMine(ctx context.Context, acct store.Account) (int, error
 	return n, nil
 }
 
-func (p *Pipeline) syncMine(ctx context.Context, client *ghmcp.Client, acct store.Account, run int64) (int, int64, error) {
-	type key struct {
-		repo string
-		num  int
+func (p *Pipeline) syncMine(ctx context.Context, src source.Source, acct store.Account, run int64) (int, int64, error) {
+	items, err := src.Mine(ctx)
+	if err != nil {
+		return 0, run, err
 	}
-	merged := map[key]*store.Item{}
-	add := func(rel string, items []ghmcp.Item) {
-		for _, it := range items {
-			k := key{it.Repo, it.Number}
-			cur, ok := merged[k]
-			if !ok {
-				kind := "issue"
-				if it.IsPR {
-					kind = "pr"
-				}
-				cur = &store.Item{AccountID: acct.ID, Repo: it.Repo, Number: it.Number, Kind: kind, Title: it.Title, State: it.State,
-					HTMLURL: it.HTMLURL, Author: it.Author, Assignees: it.Assignees, Labels: it.Labels, Draft: it.Draft, Comments: it.Comments,
-					CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt}
-				merged[k] = cur
-			}
-			cur.Relations = appendUnique(cur.Relations, rel)
-		}
-	}
-	for _, q := range mineQueries {
-		if q.Issues {
-			res, err := client.SearchIssues(ctx, q.Query, 1, 100)
-			if err != nil {
-				return 0, run, fmt.Errorf("%s (issues): %w", q.Relation, err)
-			}
-			add(q.Relation, res.Items)
-		}
-		if q.PRs {
-			res, err := client.SearchPullRequests(ctx, q.Query, 1, 100)
-			if err != nil {
-				return 0, run, fmt.Errorf("%s (prs): %w", q.Relation, err)
-			}
-			add(q.Relation, res.Items)
-		}
-	}
-	for _, it := range merged {
-		if err := p.deps.DB.UpsertItem(ctx, *it, run); err != nil {
+	for _, it := range items {
+		it.AccountID = acct.ID
+		if err := p.deps.DB.UpsertItem(ctx, it, run); err != nil {
 			return 0, run, err
 		}
 	}
 	if _, err := p.deps.DB.PruneItems(ctx, acct.ID, run); err != nil {
 		return 0, run, err
 	}
-	return len(merged), run, nil
-}
-
-func appendUnique(s []string, v string) []string {
-	for _, x := range s {
-		if x == v {
-			return s
-		}
-	}
-	return append(s, v)
+	return len(items), run, nil
 }
 
 // --- local triage actions (mirrored to GitHub only when the write mode allows) --
@@ -513,7 +534,7 @@ func (p *Pipeline) MarkRead(ctx context.Context, acct store.Account, threadID st
 		return MirrorResult{}, err
 	}
 	defer p.deps.Emit(EventInboxUpdated, nil)
-	return p.mirror(ctx, acct, func(c *ghmcp.Client) error { return c.DismissNotification(ctx, threadID, "read") }), nil
+	return p.mirror(ctx, acct, func(s source.Source) error { return s.MarkRead(ctx, threadID) }), nil
 }
 
 func (p *Pipeline) MarkDone(ctx context.Context, acct store.Account, threadID string) (MirrorResult, error) {
@@ -521,7 +542,7 @@ func (p *Pipeline) MarkDone(ctx context.Context, acct store.Account, threadID st
 		return MirrorResult{}, err
 	}
 	defer p.deps.Emit(EventInboxUpdated, nil)
-	return p.mirror(ctx, acct, func(c *ghmcp.Client) error { return c.DismissNotification(ctx, threadID, "done") }), nil
+	return p.mirror(ctx, acct, func(s source.Source) error { return s.MarkDone(ctx, threadID) }), nil
 }
 
 func (p *Pipeline) UndoDone(ctx context.Context, acct store.Account, threadID string) error {
@@ -545,25 +566,29 @@ func (p *Pipeline) Unsubscribe(ctx context.Context, acct store.Account, threadID
 		return MirrorResult{}, err
 	}
 	defer p.deps.Emit(EventInboxUpdated, nil)
-	res := p.mirror(ctx, acct, func(c *ghmcp.Client) error { return c.ManageNotificationSubscription(ctx, threadID, "ignore") })
+	res := p.mirror(ctx, acct, func(s source.Source) error { return s.Unsubscribe(ctx, threadID) })
 	if !res.Mirrored && res.Warning == "" {
 		res.Warning = "unsubscribe needs write mode 'notifications'; thread hidden locally only"
 	}
 	return res, nil
 }
 
-// mirror runs a GitHub write when the account allows it; failures become warnings.
-func (p *Pipeline) mirror(ctx context.Context, acct store.Account, do func(*ghmcp.Client) error) MirrorResult {
+// mirror runs a forge write when the account allows it; failures become warnings.
+// Actions the forge cannot represent (source.ErrNotMirrorable) stay silent.
+func (p *Pipeline) mirror(ctx context.Context, acct store.Account, do func(source.Source) error) MirrorResult {
 	if acct.WriteMode != string(ghmcp.WriteModeNotifications) {
 		return MirrorResult{}
 	}
-	client, err := p.Client(ctx, acct)
+	src, err := p.Source(ctx, acct)
 	if err != nil {
-		return MirrorResult{Warning: "GitHub not updated: " + err.Error()}
+		return MirrorResult{Warning: "not mirrored to " + acct.Forge + ": " + err.Error()}
 	}
-	if err := do(client); err != nil {
-		p.deps.Logger.Warn("mirror to GitHub failed", "account", acct.Login, "err", err)
-		return MirrorResult{Warning: "GitHub not updated: " + err.Error()}
+	if err := do(src); err != nil {
+		if errors.Is(err, source.ErrNotMirrorable) {
+			return MirrorResult{}
+		}
+		p.deps.Logger.Warn("mirror failed", "account", acct.Login, "forge", acct.Forge, "err", err)
+		return MirrorResult{Warning: "not mirrored to " + acct.Forge + ": " + err.Error()}
 	}
 	return MirrorResult{Mirrored: true}
 }
@@ -585,6 +610,33 @@ func (p *Pipeline) RunScheduler(ctx context.Context, interval time.Duration) {
 			if _, err := p.SyncAll(ctx, false); err != nil && ctx.Err() == nil {
 				p.deps.Logger.Warn("scheduled sync", "err", err)
 			}
+			p.judgeAfterSync(ctx)
 		}
 	}
+}
+
+func classifyKind(k string) classify.Kind { return classify.Kind(k) }
+
+// judgeAfterSync runs the judge step when a provider is configured; a missing
+// provider is not an error worth logging on every tick.
+func (p *Pipeline) judgeAfterSync(ctx context.Context) {
+	reports, err := p.JudgeAll(ctx)
+	if err != nil && ctx.Err() == nil {
+		p.deps.Logger.Warn("scheduled judge", "err", err)
+	}
+	for _, r := range reports {
+		if r.Error != "" && !errors.Is(errors.New(r.Error), ErrJudgeOff) && !strings.Contains(r.Error, ErrJudgeOff.Error()) {
+			p.deps.Logger.Warn("judge run", "account", r.Login, "err", r.Error)
+		}
+	}
+}
+
+// SyncAndJudge is the scheduler's unit of work, also used at startup.
+func (p *Pipeline) SyncAndJudge(ctx context.Context, full bool) ([]SyncReport, []JudgeReport, error) {
+	syncs, err := p.SyncAll(ctx, full)
+	if err != nil {
+		return syncs, nil, err
+	}
+	judges, _ := p.JudgeAll(ctx)
+	return syncs, judges, nil
 }

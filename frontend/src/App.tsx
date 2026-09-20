@@ -34,10 +34,12 @@ function App() {
       setLastError(`${d.login ?? "sync"}: ${d.error ?? "failed"}`);
     });
     const offRep = Events.On("sync:report", () => setLastError(""));
+    const offJudged = Events.On("judgments:updated", () => setRefreshKey((k) => k + 1));
     return () => {
       offUpdated();
       offErr();
       offRep();
+      offJudged();
     };
   }, [loadAccounts]);
 
@@ -89,7 +91,7 @@ function App() {
         <div className="mt-auto pt-6 text-[11px] text-neutral-400">
           {accounts.map((a) => (
             <div key={a.id}>
-              {a.login} · {a.writeMode === "readonly" ? "read-only" : "writes: notifications"}
+              {a.forge === "gitlab" ? "GitLab" : "GitHub"} {a.login} · {a.writeMode === "readonly" ? "read-only" : "writes: notifications"}
             </div>
           ))}
         </div>
@@ -100,8 +102,8 @@ function App() {
           <h2 className="text-xl font-semibold">{view}</h2>
           {lastError && <span className="truncate text-xs text-red-600 dark:text-red-400">{lastError}</span>}
         </header>
-        {view === "Inbox" && <Inbox refreshKey={refreshKey} accountId={accountId} />}
-        {view === "Mine" && <Mine refreshKey={refreshKey} accountId={accountId || accounts[0]?.id || 0} />}
+        {view === "Inbox" && <Inbox refreshKey={refreshKey} accountId={accountId} accounts={accounts} />}
+        {view === "Mine" && <Mine refreshKey={refreshKey} accountId={accountId || accounts[0]?.id || 0} accounts={accounts} />}
         {view === "Settings" && <Settings onAccountsChanged={loadAccounts} />}
         {view === "Diagnostics" && <Diagnostics accounts={accounts} />}
       </main>

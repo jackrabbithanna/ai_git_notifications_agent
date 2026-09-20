@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { InboxService } from "../../bindings/ghinbox/internal/services";
+import { InboxService, JudgeService } from "../../bindings/ghinbox/internal/services";
+import type { Scored, JudgeReport } from "../../bindings/ghinbox/internal/pipeline";
+import Explain from "./Explain";
 import type { InboxQuery, InboxView } from "../../bindings/ghinbox/internal/services";
-import type { Thread } from "../../bindings/ghinbox/internal/store";
+import type { Account } from "../../bindings/ghinbox/internal/store";
 import type { SyncReport } from "../../bindings/ghinbox/internal/pipeline";
 import { openURL } from "../lib/browser";
 import { fmtDuration, reasonLabel, timeAgo } from "../lib/format";
 import { Button, Chip, ErrorText, errMsg } from "../lib/ui";
 
-type Props = { refreshKey: number; accountId: number };
+type Props = { refreshKey: number; accountId: number; accounts: Account[] };
 
-export default function Inbox({ refreshKey, accountId }: Props) {
+export default function Inbox({ refreshKey, accountId, accounts }: Props) {
+  const forgeOf = (id: number) => accounts.find((a) => a.id === id)?.forge ?? "github";
   const [view, setView] = useState<InboxView | null>(null);
   const [includeRead, setIncludeRead] = useState(false);
   const [includeNoise, setIncludeNoise] = useState(false);
@@ -18,6 +21,21 @@ export default function Inbox({ refreshKey, accountId }: Props) {
   const [syncing, setSyncing] = useState(false);
   const [reports, setReports] = useState<SyncReport[]>([]);
   const [notice, setNotice] = useState("");
+  const [judging, setJudging] = useState(false);
+  const [judgeReports, setJudgeReports] = useState<JudgeReport[]>([]);
+  const [openExplain, setOpenExplain] = useState<string>("");
+
+  const judge = () => {
+    setJudging(true);
+    setError("");
+    JudgeService.Run(0, 0)
+      .then((r) => {
+        setJudgeReports(r ?? []);
+        load();
+      })
+      .catch((e) => setError(errMsg(e)))
+      .finally(() => setJudging(false));
+  };
 
   const load = useCallback(() => {
     const q: InboxQuery = { accountId, includeRead, includeNoise, includeDone, repo: "", limit: 500 };
@@ -60,6 +78,9 @@ export default function Inbox({ refreshKey, accountId }: Props) {
         <Button onClick={() => sync(true)} disabled={syncing} title="Re-read the last 7 days including read notifications">
           Full sync
         </Button>
+        <Button onClick={judge} disabled={judging} title="Enrich and judge unread threads that have no fresh judgment">
+          {judging ? "Judging…" : "Judge pending"}
+        </Button>
         <label className="flex items-center gap-1 text-xs">
           <input type="checkbox" checked={includeRead} onChange={(e) => setIncludeRead(e.target.checked)} /> read
         </label>
@@ -71,7 +92,8 @@ export default function Inbox({ refreshKey, accountId }: Props) {
         </label>
         {view && (
           <span className="ml-auto text-xs text-neutral-500">
-            {view.total} shown · unread {view.counts.unread} · noise {view.counts.noise} · done {view.counts.done}
+            {view.total} shown · judged {view.judged} · unjudged {view.unjudged} · unread {view.counts.unread} · noise {view.counts.noise} · done{" "}
+            {view.counts.done}
           </span>
         )}
       </div>
@@ -90,6 +112,18 @@ export default function Inbox({ refreshKey, accountId }: Props) {
         </ul>
       )}
 
+      {judgeReports.length > 0 && (
+        <ul className="text-xs text-neutral-600 dark:text-neutral-400">
+          {judgeReports.map((r) => (
+            <li key={r.accountId}>
+              {r.login}: {r.provider || "no provider"} {r.model} — candidates {r.candidates}, judged {r.judged}, enriched {r.enriched}, failed {r.failed}, tokens{" "}
+              {r.usage.inputTokens}/{r.usage.outputTokens}
+              {r.error && <span className="text-red-600"> — {r.error}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+
       {view && view.total === 0 && (
         <p className="text-sm text-neutral-500">Nothing to show. Add an account in Settings, then Sync.</p>
       )}
@@ -100,8 +134,16 @@ export default function Inbox({ refreshKey, accountId }: Props) {
             {g.label} <span className="font-normal">({g.threads?.length ?? 0})</span>
           </h3>
           <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
-            {g.threads?.map((t) => (
-              <ThreadRow key={`${t.accountId}:${t.threadId}`} t={t} act={act} />
+            {g.threads?.map((sc) => (
+              <ThreadRow
+                key={`${sc.thread.accountId}:${sc.thread.threadId}`}
+                sc={sc}
+                act={act}
+                forge={forgeOf(sc.thread.accountId)}
+                open={openExplain === `${sc.thread.accountId}:${sc.thread.threadId}`}
+                onToggle={() => setOpenExplain((cur) => (cur === `${sc.thread.accountId}:${sc.thread.threadId}` ? "" : `${sc.thread.accountId}:${sc.thread.threadId}`))}
+                onChanged={load}
+              />
             ))}
           </ul>
         </section>
@@ -110,12 +152,38 @@ export default function Inbox({ refreshKey, accountId }: Props) {
   );
 }
 
-function ThreadRow({ t, act }: { t: Thread; act: (label: string, p: Promise<unknown>) => void }) {
+function ThreadRow({
+  sc,
+  act,
+  forge,
+  open,
+  onToggle,
+  onChanged,
+}: {
+  sc: Scored;
+  act: (label: string, p: Promise<unknown>) => void;
+  forge: string;
+  open: boolean;
+  onToggle: () => void;
+  onChanged: () => void;
+}) {
+  const t = sc.thread;
+  const s = sc.score;
   const read = !t.unread || !!t.localReadAt;
+  const numPrefix = t.subjectType === "MergeRequest" ? "!" : "#";
   return (
-    <li className={`flex items-start gap-3 px-3 py-2 ${read ? "opacity-70" : ""}`}>
+    <li className={`flex flex-wrap items-start gap-3 px-3 py-2 ${read ? "opacity-70" : ""}`}>
+      <div className="w-10 shrink-0 pt-0.5 text-right" title={s.judged ? `priority ${s.priority.toFixed(2)}` : "not judged yet (prior only)"}>
+        <span className={`text-xs font-semibold ${s.judged ? "" : "text-neutral-400"}`}>{s.percent}%</span>
+        <span className="mt-0.5 block h-1 rounded bg-neutral-200 dark:bg-neutral-800">
+          <span className={`block h-1 rounded ${s.pinned ? "bg-red-500" : s.judged ? "bg-blue-500" : "bg-neutral-400"}`} style={{ width: `${s.percent}%` }} />
+        </span>
+      </div>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
+          {s.pinned && <Chip tone="red">blocking</Chip>}
+          {s.category && <Chip tone={s.bucket === "needs_me" ? "blue" : "neutral"}>{s.category.replace(/_/g, " ")}</Chip>}
+          {s.unsure && <Chip tone="amber">unsure</Chip>}
           <button
             type="button"
             className="truncate text-left text-sm font-medium hover:underline"
@@ -129,10 +197,12 @@ function ThreadRow({ t, act }: { t: Thread; act: (label: string, p: Promise<unkn
           {t.snoozedUntil && <Chip tone="blue">snoozed</Chip>}
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+          {forge === "gitlab" && <Chip tone="amber">GitLab</Chip>}
           <span className="font-mono">
             {t.repo}
-            {t.subjectNumber ? `#${t.subjectNumber}` : ""}
+            {t.subjectNumber ? `${numPrefix}${t.subjectNumber}` : ""}
           </span>
+          {t.actor && <span>by {t.actor}</span>}
           <Chip>{reasonLabel(t.reason)}</Chip>
           {t.relationTags?.map((r) => (
             <Chip key={r} tone="blue">
@@ -173,7 +243,15 @@ function ThreadRow({ t, act }: { t: Thread; act: (label: string, p: Promise<unkn
         >
           Mute
         </Button>
+        <Button kind="ghost" onClick={onToggle} title="Why this score? Answers, probabilities and the state the judge saw">
+          {open ? "Hide" : "Why"}
+        </Button>
       </div>
+      {open && (
+        <div className="basis-full">
+          <Explain accountId={t.accountId} threadId={t.threadId} onChanged={onChanged} />
+        </div>
+      )}
     </li>
   );
 }

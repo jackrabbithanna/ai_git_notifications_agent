@@ -37,17 +37,22 @@ func (s *AccountsService) List() ([]AccountView, error) {
 	return out, nil
 }
 
-// Add validates the token with get_me, stores it in the secrets store, and
-// registers the account in read-only write mode.
-func (s *AccountsService) Add(token, host string) (store.Account, error) {
+// Add validates the token against the forge (get_me / GET /user), stores it in
+// the secrets store, and registers the account in read-only write mode.
+// forge is "github" (default) or "gitlab"; host defaults per forge.
+func (s *AccountsService) Add(forge, token, host string) (store.Account, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return store.Account{}, errors.New("token is required")
 	}
-	if s.App.MCPErr != nil {
+	forge = strings.TrimSpace(strings.ToLower(forge))
+	if forge == "" {
+		forge = store.ForgeGitHub
+	}
+	if forge == store.ForgeGitHub && s.App.MCPErr != nil {
 		return store.Account{}, s.App.MCPErr
 	}
-	return s.App.Pipe.AddAccount(context.Background(), token, strings.TrimSpace(host))
+	return s.App.Pipe.AddAccount(context.Background(), forge, token, strings.TrimSpace(host))
 }
 
 func (s *AccountsService) Remove(id int64) error {

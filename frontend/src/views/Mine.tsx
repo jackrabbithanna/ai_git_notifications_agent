@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { MineService } from "../../bindings/ghinbox/internal/services";
-import type { Item } from "../../bindings/ghinbox/internal/store";
+import type { Account, Item } from "../../bindings/ghinbox/internal/store";
 import { openURL } from "../lib/browser";
 import { timeAgo } from "../lib/format";
 import { Button, Chip, ErrorText, errMsg } from "../lib/ui";
 
 const RELATIONS = ["assigned", "mentioned", "review_requested", "author"] as const;
 
-export default function Mine({ refreshKey, accountId }: { refreshKey: number; accountId: number }) {
+export default function Mine({ refreshKey, accountId, accounts }: { refreshKey: number; accountId: number; accounts: Account[] }) {
+  const forgeOf = (id: number) => accounts.find((a) => a.id === id)?.forge ?? "github";
   const [items, setItems] = useState<Item[]>([]);
   const [includeClosed, setIncludeClosed] = useState(false);
   const [relation, setRelation] = useState<string>("");
@@ -62,14 +63,19 @@ export default function Mine({ refreshKey, accountId }: { refreshKey: number; ac
       <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
         {shown.map((i) => (
           <li key={`${i.accountId}:${i.repo}#${i.number}`} className="flex items-start gap-3 px-3 py-2">
-            <Chip tone={i.kind === "pr" ? "blue" : "neutral"}>{i.kind === "pr" ? (i.draft ? "draft PR" : "PR") : "issue"}</Chip>
+            <Chip tone={i.kind === "issue" ? "neutral" : "blue"}>
+              {i.kind === "issue" ? "issue" : `${i.draft ? "draft " : ""}${i.kind === "mr" ? "MR" : "PR"}`}
+            </Chip>
             <div className="min-w-0 flex-1">
               <button type="button" className="truncate text-left text-sm font-medium hover:underline" onClick={() => openURL(i.htmlUrl)}>
                 {i.title}
               </button>
               <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+                {forgeOf(i.accountId) === "gitlab" && <Chip tone="amber">GitLab</Chip>}
                 <span className="font-mono">
-                  {i.repo}#{i.number}
+                  {i.repo}
+                  {i.kind === "mr" ? "!" : "#"}
+                  {i.number}
                 </span>
                 <span>by {i.author}</span>
                 {i.relations?.map((r) => (
