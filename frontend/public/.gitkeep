@@ -1,0 +1,2 @@
+# Keeps frontend/dist present so `//go:embed all:frontend/dist` compiles before the first frontend build.
+# Vite copies public/ into dist/ on build, recreating this file after dist is emptied.

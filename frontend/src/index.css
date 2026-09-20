@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* Dark mode follows the OS until the app grows its own theme setting. */
+@custom-variant dark (&:where(.dark, .dark *), @media (prefers-color-scheme: dark));
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  @apply min-h-screen bg-neutral-50 text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}

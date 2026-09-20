@@ -1,0 +1,18 @@
+.env
+.task
+bin
+frontend/dist/*
+!frontend/dist/.gitkeep
+frontend/node_modules
+frontend/bindings
+build/linux/appimage/build
+build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+# Bundled GitHub MCP server, staged by `wails3 task common:build:mcp`
+internal/mcpbin/bin/github-mcp-server
+internal/mcpbin/bin/github-mcp-server.exe
+internal/mcpbin/bin/VERSION
+# Mobile generated (per-machine; overlays hold absolute paths)
+build/ios/xcode/overlay.json
+build/ios/xcode/gen/
+build/android/overlay.json
+build/android/gen/

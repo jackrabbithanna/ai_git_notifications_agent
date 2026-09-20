@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Wails v3 on Linux links GTK4 + WebKitGTK 6.0 (and X11 for global shortcuts).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libx11-dev
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.23
+
+      - name: Build (frontend, bundled MCP server, app)
+        run: wails3 build
+
+      - name: Vet and test
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Smoke-test CLI
+        run: |
+          go build -o bin/ghinbox-cli ./cmd/ghinbox
+          ./bin/ghinbox-cli mcp path
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghinbox-linux-${{ matrix.arch }}
+          path: bin/ghinbox
+          if-no-files-found: error
