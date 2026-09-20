@@ -1,0 +1,9 @@
+{
+  "name": "gitinbox-agent",
+  "private": true,
+  "description": "Pins the pi (pi.dev) runtime GitInbox uses as its agent sidecar during development: `npm install` here and the app finds agent/node_modules/.bin/pi. Users can instead install pi globally.",
+  "license": "MIT",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.86.1"
+  }
+}

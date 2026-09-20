@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { AccountsService, DiagnosticsService, ImpactService, JudgeService, ProseService, WatchesService } from "../../bindings/gitinbox/internal/services";
-import type { ProseSettings } from "../../bindings/gitinbox/internal/pipeline";
+import { AccountsService, AgentService, DiagnosticsService, ImpactService, JudgeService, ProseService, WatchesService } from "../../bindings/gitinbox/internal/services";
+import type { AgentSettings, ProseSettings } from "../../bindings/gitinbox/internal/pipeline";
+import type { Info as PiInfo, ModelInfo } from "../../bindings/gitinbox/internal/agent";
 import type { ImpactSettings } from "../../bindings/gitinbox/internal/pipeline";
 import type { JudgeStatus } from "../../bindings/gitinbox/internal/services";
 import type { JudgeSettings } from "../../bindings/gitinbox/internal/pipeline";
@@ -165,6 +166,7 @@ export default function Settings({ onAccountsChanged }: { onAccountsChanged: () 
       <WeightsSection onError={setError} />
       <ImpactSection onError={setError} />
       <ProseSection onError={setError} />
+      <AgentSection onError={setError} />
 
       {rules && (
         <Card
@@ -571,5 +573,103 @@ function TextList({ label, value, onChange }: { label: string; value: string; on
         placeholder="one per line"
       />
     </label>
+  );
+}
+
+function AgentSection({ onError }: { onError: (e: string) => void }) {
+  const [s, setS] = useState<AgentSettings | null>(null);
+  const [pi, setPi] = useState<PiInfo | null>(null);
+  const [piError, setPiError] = useState("");
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [saved, setSaved] = useState("");
+  const load = useCallback(() => {
+    AgentService.Settings()
+      .then(setS)
+      .catch((e) => onError(errMsg(e)));
+    AgentService.Locate()
+      .then((i) => {
+        setPi(i);
+        setPiError("");
+      })
+      .catch((e) => {
+        setPi(null);
+        setPiError(errMsg(e));
+      });
+    AgentService.Models()
+      .then((m) => setModels(m ?? []))
+      .catch(() => setModels([]));
+  }, [onError]);
+  useEffect(() => {
+    load();
+  }, [load]);
+  if (!s) return null;
+  const save = () => {
+    AgentService.SaveSettings(s)
+      .then(() => {
+        setSaved("Saved. A running agent restarts with the new settings on its next message.");
+        load();
+      })
+      .catch((e) => onError(errMsg(e)));
+  };
+  const input = "rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900";
+  return (
+    <Card
+      title="Agent (pi sidecar)"
+      actions={
+        <Button kind="primary" onClick={save}>
+          Save agent settings
+        </Button>
+      }
+    >
+      <p className="mb-2 text-xs text-neutral-500">
+        The Agent view runs <a className="underline" href="https://pi.dev">pi</a> headlessly with only GitInbox's own tools (no shell, no file access), talking to your
+        Ollama model. It reads the inbox, judgments, summaries and impact analyses through a loopback API, reaches GitHub/GitLab read-only, and can mark threads
+        done/snoozed or store draft replies when asked — it can never post.{" "}
+        {pi ? (
+          <>
+            pi found: <b>{pi.version || "?"}</b> ({pi.source}) at <code>{pi.path}</code>
+          </>
+        ) : (
+          <span className="text-amber-700 dark:text-amber-300">{piError || "pi not found"}</span>
+        )}
+      </p>
+      <div className="grid gap-3 text-sm md:grid-cols-2">
+        <label className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+          <input type="checkbox" checked={s.enabled} onChange={(e) => setS({ ...s, enabled: e.target.checked })} />
+          Enable the agent
+        </label>
+        <label className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+          <input type="checkbox" checked={s.autoStart} onChange={(e) => setS({ ...s, autoStart: e.target.checked })} />
+          Start the sidecar when GitInbox starts
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          pi binary (blank = auto-detect: PATH, then the repository's agent/node_modules)
+          <input className={"mt-1 w-full " + input} value={s.piPath} onChange={(e) => setS({ ...s, piPath: e.target.value })} placeholder="/usr/local/bin/pi" />
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Ollama model (blank = summary → note → judge model)
+          <input className={"mt-1 w-full " + input} list="agent-models" value={s.model} onChange={(e) => setS({ ...s, model: e.target.value })} placeholder="e.g. qwen3.5:9b" />
+          <datalist id="agent-models">
+            {models.map((m) => (
+              <option key={m.id} value={m.id} />
+            ))}
+          </datalist>
+        </label>
+        <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+          Thinking level (models that support it)
+          <select className={"mt-1 w-full " + input} value={s.thinking} onChange={(e) => setS({ ...s, thinking: e.target.value })}>
+            <option value="off">off (fastest)</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </label>
+      </div>
+      {saved && <p className="mt-2 text-xs text-green-700 dark:text-green-400">{saved}</p>}
+      <p className="mt-2 text-xs text-neutral-500">
+        Install pi with <code>npm install -g @earendil-works/pi-coding-agent</code> (Node 22.19+). The model must support tool calling (qwen3.5, gpt-oss, gemma4 do);
+        set a larger context on the Ollama server (e.g. <code>OLLAMA_CONTEXT_LENGTH=32768</code>) so tool results fit.
+      </p>
+    </Card>
   );
 }

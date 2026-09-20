@@ -10,8 +10,9 @@ import Impact from "./views/Impact";
 import Profiles from "./views/Profiles";
 import Digest from "./views/Digest";
 import Eval from "./views/Eval";
+import Agent from "./views/Agent";
 
-const VIEWS = ["Inbox", "Mine", "Impact", "Digest", "Eval", "Profiles", "Settings", "Diagnostics"] as const;
+const VIEWS = ["Inbox", "Mine", "Impact", "Digest", "Agent", "Eval", "Profiles", "Settings", "Diagnostics"] as const;
 type View = (typeof VIEWS)[number];
 
 // Planned views not yet implemented (see PLAN.md milestones).
@@ -23,6 +24,7 @@ function App() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState(0); // 0 = all accounts
   const [lastError, setLastError] = useState("");
+  const [agentPrefill, setAgentPrefill] = useState<{ text: string; key: number } | null>(null);
 
   const loadAccounts = useCallback(() => {
     AccountsService.List()
@@ -43,6 +45,7 @@ function App() {
     const offSummary = Events.On("summary:updated", () => setRefreshKey((k) => k + 1));
     const offDigest = Events.On("digest:updated", () => setRefreshKey((k) => k + 1));
     const offLabels = Events.On("labels:updated", () => setRefreshKey((k) => k + 1));
+    const offDraft = Events.On("draft:saved", () => setRefreshKey((k) => k + 1));
     return () => {
       offUpdated();
       offErr();
@@ -52,6 +55,7 @@ function App() {
       offSummary();
       offDigest();
       offLabels();
+      offDraft();
     };
   }, [loadAccounts]);
 
@@ -114,10 +118,21 @@ function App() {
           <h2 className="text-xl font-semibold">{view}</h2>
           {lastError && <span className="truncate text-xs text-red-600 dark:text-red-400">{lastError}</span>}
         </header>
-        {view === "Inbox" && <Inbox refreshKey={refreshKey} accountId={accountId} accounts={accounts} />}
+        {view === "Inbox" && (
+          <Inbox
+            refreshKey={refreshKey}
+            accountId={accountId}
+            accounts={accounts}
+            onDeepDive={(text) => {
+              setAgentPrefill({ text, key: Date.now() });
+              setView("Agent");
+            }}
+          />
+        )}
         {view === "Mine" && <Mine refreshKey={refreshKey} accountId={accountId || accounts[0]?.id || 0} accounts={accounts} />}
         {view === "Impact" && <Impact refreshKey={refreshKey} accountId={accountId} accounts={accounts} />}
         {view === "Digest" && <Digest refreshKey={refreshKey} />}
+        {view === "Agent" && <Agent prefill={agentPrefill} />}
         {view === "Eval" && <Eval refreshKey={refreshKey} accountId={accountId} accounts={accounts} />}
         {view === "Profiles" && <Profiles />}
         {view === "Settings" && <Settings onAccountsChanged={loadAccounts} />}

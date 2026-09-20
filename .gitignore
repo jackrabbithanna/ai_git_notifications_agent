@@ -16,3 +16,5 @@ build/ios/xcode/overlay.json
 build/ios/xcode/gen/
 build/android/overlay.json
 build/android/gen/
+# pi runtime for development (agent/package.json pins it; users install pi themselves)
+agent/node_modules

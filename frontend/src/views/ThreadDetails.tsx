@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { ImpactService, ProseService } from "../../bindings/gitinbox/internal/services";
+import { Events } from "@wailsio/runtime";
+import { AgentService, ImpactService, ProseService } from "../../bindings/gitinbox/internal/services";
 import type { ImpactView, SummaryView } from "../../bindings/gitinbox/internal/pipeline";
-import type { Thread } from "../../bindings/gitinbox/internal/store";
+import type { Draft, Thread } from "../../bindings/gitinbox/internal/store";
 import { fmtDateTime } from "../lib/format";
 import { Button, ErrorText, errMsg } from "../lib/ui";
 import { ImpactDetails, levelName } from "./Impact";
@@ -14,6 +15,8 @@ export default function ThreadDetails({ thread, onChanged }: { thread: Thread; o
   const isPR = (t.subjectType === "PullRequest" || t.subjectType === "MergeRequest") && t.subjectNumber > 0;
   const [summary, setSummary] = useState<SummaryView | null>(null);
   const [impact, setImpact] = useState<ImpactView | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -23,6 +26,9 @@ export default function ThreadDetails({ thread, onChanged }: { thread: Thread; o
       ProseService.Summary(t.accountId, t.threadId)
         .then((s) => setSummary(s))
         .catch(() => setSummary(null)),
+      AgentService.Draft(t.accountId, t.threadId)
+        .then((d) => setDraft(d))
+        .catch(() => setDraft(null)),
     ];
     if (isPR) {
       ps.push(
@@ -35,7 +41,13 @@ export default function ThreadDetails({ thread, onChanged }: { thread: Thread; o
   }, [t.accountId, t.threadId, t.repo, t.subjectNumber, isPR]);
   useEffect(() => {
     load();
-  }, [load]);
+    const off = Events.On("draft:saved", (ev: { data?: { accountId?: number; threadId?: string } }) => {
+      if (ev.data?.accountId === t.accountId && ev.data?.threadId === t.threadId) load();
+    });
+    return () => {
+      off();
+    };
+  }, [load, t.accountId, t.threadId]);
 
   const summarise = () => {
     setBusy("summary");
@@ -105,6 +117,42 @@ export default function ThreadDetails({ thread, onChanged }: { thread: Thread; o
           </div>
         )}
       </section>
+
+      {draft && (
+        <section className="mb-3">
+          <div className="mb-1 flex items-center gap-2">
+            <span className="font-medium">Draft reply (from the agent, not posted)</span>
+            <span className="text-neutral-500">
+              {draft.model && `${draft.model} · `}
+              {fmtDateTime(draft.createdAt)}
+            </span>
+            <span className="ml-auto flex gap-1">
+              <Button
+                onClick={() => {
+                  navigator.clipboard?.writeText(draft.text).then(
+                    () => setCopied(true),
+                    () => setCopied(false),
+                  );
+                }}
+                title="Copy the draft to the clipboard"
+              >
+                {copied ? "Copied" : "Copy"}
+              </Button>
+              <Button
+                kind="ghost"
+                onClick={() =>
+                  AgentService.DeleteDraft(t.accountId, t.threadId)
+                    .then(() => setDraft(null))
+                    .catch((e) => setError(errMsg(e)))
+                }
+              >
+                Delete
+              </Button>
+            </span>
+          </div>
+          <pre className="whitespace-pre-wrap rounded bg-white p-2 font-sans text-xs dark:bg-neutral-900">{draft.text}</pre>
+        </section>
+      )}
 
       {isPR && (
         <section>

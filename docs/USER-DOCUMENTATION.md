@@ -5,8 +5,9 @@ do. It pulls every notification (and every to-do, on GitLab) for one or more acc
 deterministically what kind of activity each one is, filters the noise, asks a calibrated judge
 (TypeSafe Jev) what needs you and how urgently, analyses pull requests in the upstream projects you
 build on for changes that would affect your code, and — with a local Ollama model — writes
-summaries, impact notes and a digest. Read, Done, Snooze and Mute are local state unless you opt in
-to mirroring them to the forge.
+summaries, impact notes and a digest — and lets you chat with all of that through a [pi](https://pi.dev)
+agent that can only read. Read, Done, Snooze and Mute are local state unless you opt in to mirroring
+them to the forge.
 
 This document explains every concept, view, setting and CLI command. Installation is covered in
 [INSTALLATION.md](INSTALLATION.md); internals in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -125,7 +126,7 @@ on GitLab, which has no read state short of done. Nothing else is ever written.
 
 ## 2. The application window
 
-The left sidebar switches between **Inbox**, **Mine**, **Impact**, **Digest**, **Eval**,
+The left sidebar switches between **Inbox**, **Mine**, **Impact**, **Digest**, **Agent**, **Eval**,
 **Profiles**, **Settings** and **Diagnostics**, and holds an **account selector** (all accounts, or
 one). The header shows the current view and the last sync error, if any. The window opens on
 Settings until the first account exists.
@@ -185,7 +186,8 @@ details panel; stale summaries are marked).
 | **Snooze** | Hides for 24 h (the CLI takes any duration). |
 | **Mute** | Unsubscribes from the thread. Local-only unless mirrored. |
 | **Analyze / Re-analyze** | Runs impact analysis against the matching profile (generic if none). Shows progress notices; the result appears as an impact chip and in the Impact view. Re-analyze forces a new run even for the same head commit. |
-| **Details** | Expands a panel with the full summary (generate / regenerate) and the full impact analysis (layers, signals, surface hits, judgment table, note) — the same content as the Impact view, in place. |
+| **Deep-dive** | Switches to the Agent view and sends a prompt asking the agent to read the thread, its live discussion and (for PRs) the impact analysis, then report what it is about, what is asked of you, the state and a next action. |
+| **Details** | Expands a panel with the full summary (generate / regenerate), the agent's draft reply when one exists (Copy / Delete), and the full impact analysis (layers, signals, surface hits, judgment table, note) — the same content as the Impact view, in place. |
 | **Why** | Expands the explain panel: the judged answers with probabilities, the exact state the judge saw, the score breakdown, the provider and model, staleness, and a *Judge now* button. |
 
 ---
@@ -222,6 +224,44 @@ kind used by the Eval view.
 model, then the judge model). The digest lists a headline, sections with one-line items and a
 concrete "why", and up to five suggested actions. Previous digests are kept and selectable. With
 *auto digest* on (default) one is generated every 24 hours while the app runs.
+
+---
+
+## 6a. Agent
+
+The Agent view is a chat with a [pi](https://pi.dev) sidecar whose **only tools are GitInbox's own
+data and read-only forge access**. It has no shell and no file access; it cannot post, comment,
+approve, merge or label anything. What it can do:
+
+- Answer questions over the inbox: top priorities, searches, what a thread is about, who is
+  waiting on whom, which merged PRs affect your extensions, what your open review requests are
+  waiting on. Its tools return the judged category and probabilities, the score, the summary,
+  the impact analysis and the item's live discussion, so answers are grounded in what the
+  pipeline already computed.
+- **Deep-dive** a thread (from the inbox row button or by asking): `get_thread` →
+  `get_thread_comments` (fetched live: issue comments, PR reviews and review comments, GitLab
+  notes) → for PRs `get_pr_analysis` / `get_pr_changes` → what / asked of you / state / next action.
+- Change local triage state **when you ask** (mark done / read, undo, snooze) — mirrored to the
+  forge only as the account's write mode already allows.
+- **Draft a reply** (`draft_reply`): stored locally, shown in the thread's Details panel with a
+  Copy button. Nothing is ever sent.
+- Reach GitHub's read tools directly (`github_read`: `issue_read`, `pull_request_read` with any
+  read method, searches, `list_pull_requests`) for things the higher-level tools lack.
+
+**Controls.** Status chip (stopped / ready / working), pi version and where it was found, a
+**model** select (every model your Ollama server lists; the choice is remembered), **Abort** while
+it works, **New session** (forget the conversation), **Start** / **Stop** (it also starts on the
+first message and keeps running until you stop it or quit). The transcript streams as the model
+writes; tool calls appear as collapsible cards with their arguments and results. Suggestion chips
+cover the common questions. Enter sends, Shift+Enter inserts a newline; a message sent while the
+agent is still working is queued as a follow-up.
+
+**Requirements.** pi installed (Settings → Agent shows whether it was found; see INSTALLATION §6.4)
+and an Ollama model that supports tool calling (`qwen3.5:9b` is the reference). Everything the
+agent sees goes to that Ollama server, nowhere else.
+
+**Headless.** `gitinbox-cli agent chat "What needs me most right now?"` streams the same answer to
+the terminal (tool calls on stderr); `agent status` and `agent models` inspect the setup.
 
 ---
 
@@ -314,6 +354,12 @@ Auto-analyse PR threads in profile repos (on), max analyses per run (20), note m
 level ≥ (default: never — notes on demand), scan landed PRs (on) every N minutes (30), look-back
 days (7).
 
+### Agent (pi sidecar)
+Enable (on), start with the app (off), pi binary path (blank = auto-detect: `PATH`, then the
+repository's `agent/node_modules`), Ollama model (blank = summary → note → judge model), thinking
+level (off / low / medium / high; off is fastest). The card shows whether pi was found and its
+version. Disabling stops a running sidecar; other changes apply on its next message.
+
 ### Priority weights
 Sliders for the scoring weights (§9 formula) plus recency half-life (48 h), resolved threshold
 (0.8), unsure-below (0.5) and the uncalibrated discount (0.7); per-kind and per-relation priors.
@@ -343,7 +389,8 @@ backend, database path, log path) · **GitLab accounts** (host and token scopes;
 server) ·
 **Server tools** per GitHub account — every tool the server registered under the current write
 mode, with the ones the client allowlist admits highlighted (25 read-only tools by default; 29 in
-`notifications` mode with exactly 2 admitted) · **Triage judge** — which provider resolves, whether
+`notifications` mode with exactly 2 admitted) · **Agent** — state, pi binary/version, model, agent
+directory, local API address, transcript length, Start/Stop · **Triage judge** — which provider resolves, whether
 it is calibrated, why not, and judgment counts · **Model usage** — tokens and latency per provider
 and model across judgments, analyses, notes, summaries and digests · **MCP call counters** for the
 session (calls per tool, restarts).
@@ -377,6 +424,7 @@ usage
 eval queue [--limit N] | label THREAD_ID KEY=VALUE… | pr-label REPO#N impact=0-3 [kind=…]
 eval judge --provider jev|ollama [--model M] [--force] | report [--out DIR] | tune [--iters N] [--apply] | export FILE | import FILE
 read|done|undone [--account L] THREAD_ID | snooze [--account L] --for 2h THREAD_ID
+agent status | chat [--model M] PROMPT… | models
 version
 ```
 
@@ -391,6 +439,7 @@ Settings keys for `settings set`:
 | `interests` | your interests text |
 | `impact.auto`, `impact.max`, `impact.note-model`, `impact.note-level` (2·3·4=never), `impact.scan-landed`, `impact.landed-days` | impact settings |
 | `summary.model`, `summary.top`, `summary.every`, `digest.model`, `digest.auto`, `digest.hours`, `notify.needs-me`, `notify.impact-level` (3·4=never) | prose settings |
+| `agent.enabled`, `agent.autostart`, `agent.pi-path`, `agent.model`, `agent.thinking` (off·low·medium·high) | agent settings |
 
 Label keys for `eval label`: `category`, `requires_action`/`action` (y/n), `urgency` 0–3,
 `relevance` 0–2, `priority` 0–3, `resolved` (y/n), `noise` (y/n), `note`.
@@ -428,7 +477,7 @@ gitinbox-cli done 25702457595
 |---|---|
 | GitHub / GitLab | Only API reads (and the two mirrored writes in `notifications` mode). |
 | TypeSafe Jev | Per judged thread: forge, repo, subject type/number, title, item body (trimmed to 1,500 bytes), state, draft flag, labels, author, activity kind and reason, timestamp; your login and relation tags; the latest comment (trimmed to 1,500 bytes) with its author and time; your interests text. Per analysed PR: title, body (2,000 bytes), labels, base, state, author, counts; layers, signals, surface hits; up to 12 files with patches trimmed to 2,500 bytes each (60 KB total); the profile's downstream description. |
-| Ollama server | The same triage state (plus the previous summary) for summaries; the analysis report and judged answers for notes; scored thread lists with summaries and impact rows for digests; the triage/impact state when it acts as judge. |
+| Ollama server | The same triage state (plus the previous summary) for summaries; the analysis report and judged answers for notes; scored thread lists with summaries and impact rows for digests; the triage/impact state when it acts as judge; and, through the agent, your chat messages plus every tool result the agent fetched (thread views, live comments, PR files/diffs when asked). |
 | Nowhere else | Tokens and keys stay in the keyring; nothing is sent to Anthropic, GitHub or anyone for telemetry. |
 
 Locally stored: everything above plus judgments, analyses, summaries, digests, labels and usage
@@ -456,4 +505,9 @@ model spills to CPU). The row shows notices while it runs.
 and the Inbox tabs need no provider.
 
 **Is anything ever written to GitHub/GitLab?** Not in the default `readonly` mode. See §1 *Local
-state vs. mirrored writes* and INSTALLATION §8.
+state vs. mirrored writes* and INSTALLATION §8. The agent cannot write to a forge in any mode: its
+`github_read` pass-through accepts only read tools, and `draft_reply` stores text locally.
+
+**The Agent view says pi was not found.** Install it (`npm install -g @earendil-works/pi-coding-agent`,
+Node 22.19+) or run `npm install` inside the repository's `agent/` directory, or set the binary
+path in Settings → Agent.

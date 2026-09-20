@@ -37,9 +37,11 @@ by design). Read/Done/Snooze/Mute are local unless you explicitly enable mirrori
 - **Eval**: label threads and PRs, measure category accuracy, needs-action precision/recall +
   Brier, ordinal error, NDCG/Spearman ranking agreement and filter recall per provider, and tune
   the weights on your own labels.
+- **Agent**: chat with the inbox and deep-dive threads through a [pi](https://pi.dev) sidecar
+  whose only tools are GitInbox's own data and read-only forge access; drafts replies, never posts.
 - **Headless CLI** sharing the same database and keyring — everything above works over SSH.
 
-Milestones M0–M5 are complete (see PLAN.md §8 for live numbers); M6 (pi agent sidecar) is next.
+Milestones M0–M6 are complete (see PLAN.md §8 for live numbers).
 
 ## Stack
 
@@ -51,6 +53,7 @@ Milestones M0–M5 are complete (see PLAN.md §8 for live numbers); M6 (pi agent
 - [GitLab client-go v3](https://gitlab.com/gitlab-org/api/client-go)
 - SQLite via `modernc.org/sqlite` (CGO-free); OS keyring via `zalando/go-keyring`
 - TypeSafe Jev (System One) for judgments; Ollama for generation
+- [pi](https://pi.dev) (`@earendil-works/pi-coding-agent`, bring-your-own) as the agent sidecar
 
 ## Quick start
 
@@ -202,34 +205,52 @@ seconds (69 s before the flag), triage judgment 6 s (PLAN.md §8, M4).
 
 ## How the pi agent is used
 
-**Not yet — pi is phase 2 (milestone M6).** Triage is a fixed workflow that the deterministic
-pipeline and the typed judge cover; an agent earns its place for the open-ended parts: "chat with
-my inbox" and "deep-dive this thread/PR". The design is settled (PLAN.md §6) but no code exists
-for it in this repository.
+[pi](https://pi.dev) is the **open-ended** side: "chat with my inbox" and "deep-dive this thread".
+Triage stays a fixed pipeline; the agent is for questions the pipeline cannot anticipate. It runs as
+a **sidecar** — `pi --mode rpc`, JSONL over stdin/stdout, spawned and supervised by
+`internal/agent` — because pi is TypeScript and embedding it would need a Node host.
 
-**Planned shape.**
+**Bring your own pi.** GitInbox looks for the binary at the path set in Settings → Agent, then
+`pi` on `PATH`, then the repository's `agent/node_modules/.bin/pi` (`cd agent && npm install`
+pins `@earendil-works/pi-coding-agent` 0.86.1 for development; Node 22.19+). Nothing is bundled.
 
-- A Go `AgentService` spawns [pi](https://pi.dev) in headless RPC mode (`pi --mode rpc`, JSONL over
-  stdio) as a **sidecar** — pi is TypeScript, and embedding it in-process would require a Node host.
-  Bring-your-own pi first (on `PATH` or `~/.pi`); bundling a runtime only if needed.
-- **Isolation**: an app-owned agent directory with `models.json` pointing at Ollama's
-  OpenAI-compatible endpoint (the same LAN box), a system prompt, and pi's built-in coding tools
-  disabled.
-- **Tools**: a small TypeScript extension (`pi-gh-inbox`) exposing `search_threads`, `get_thread`,
-  `get_thread_summary`, `list_top_priority`, `list_mine`, `get_pr_analysis`, `mark_done`, `snooze`
-  as thin calls to a loopback JSON API over the same store and pipeline — so the agent sees the
-  judgments, summaries and impact analyses the app already computed rather than re-deriving them.
-- **GitHub access for deep-dives**: pi attaches the **same bundled `github-mcp-server` binary**,
-  always started `--read-only` regardless of the account's write mode, for diffs, comments and
-  history. `draft_reply` drafts only; nothing posts. `mark_done`/`snooze` are local-state calls,
-  never forge writes.
-- **UI**: a chat panel and a per-thread deep-dive drawer, with the agent's tool calls streamed
-  as events.
+**Isolation.** Every start (re)writes an app-owned agent directory,
+`$XDG_DATA_HOME/gitinbox/agent/`, and points pi at it with `PI_CODING_AGENT_DIR`: `models.json`
+(provider `ollama` → `<ollama.url>/v1`, OpenAI-compatible, every model the Ollama server lists),
+`settings.json` (project trust never, telemetry off, compaction on), sessions, and the embedded
+extension. pi is started with `--no-builtin-tools --no-extensions -e gitinbox.ts --no-skills
+--no-prompt-templates --no-themes --no-context-files --no-approve --offline`, so it has **no
+shell, no file access and no tools but GitInbox's**, and never phones home for update checks.
 
-**What exists today that it will build on**: the MCP client and allowlist (`internal/ghmcp`), the
-bundled server (`internal/mcpbin`), the pipeline methods the tools map onto (`ScoreThreads`,
-`Summarize`, `GetImpact`, `MarkDone`, `Snooze`), and the write-gating policy that makes an agent
-safe to attach.
+**Tools = the app's own data.** The extension (`internal/agent/ext/gitinbox.ts`) turns a loopback
+JSON API (`internal/localapi`, 127.0.0.1, random port, per-process bearer token) into pi tools:
+`list_top_priority`, `search_threads`, `get_thread` (item, latest activity, judged answers with
+probabilities, score, summary, impact, draft), `find_thread`, `get_thread_summary`,
+`get_thread_comments` (live discussion: issue comments, PR reviews and review comments, GitLab
+notes), `list_mine`, `list_impact`, `get_pr_analysis` (runs the analysis / note on request),
+`get_pr_changes`, `mark_done` / `mark_read` / `undo_done` / `snooze` (local triage state, mirrored
+only as the account's write mode already allows), `draft_reply` (stored in the `drafts` table and
+shown in the inbox Details panel — never posted), and `github_read` (raw pass-through to the
+account's GitHub MCP client restricted to the **read** allowlist regardless of write mode). The
+agent therefore sees what the pipeline already computed instead of re-deriving it, and cannot reach
+a forge write through any path.
+
+**Model.** The same Ollama server as the prose features; `agent.model` → summary → note → judge
+model precedence, switchable from the Agent view. The model must support tool calling; `thinking`
+defaults to off. The system prompt (`internal/agent/prompt.md`) carries the account refs, your
+interests text and the enabled impact profiles, and defines a "deep-dive" as get_thread →
+get_thread_comments → (PRs) get_pr_analysis / get_pr_changes → what / asked of me / state / next
+action.
+
+**Surfaces.** The **Agent** view streams the transcript (text deltas, collapsible tool calls),
+with model select, Abort, New session, Start/Stop and suggestion chips; every inbox row has a
+**Deep-dive** button that pre-fills and sends the prompt; Settings → Agent (enable, autostart,
+pi path, model, thinking) and Diagnostics → Agent (binary, version, agent dir, API port); the CLI
+has `agent status | chat "…" | models` for headless use and `settings set agent.*`.
+
+Measured with pi 0.86.1 and `qwen3.5:9b`: sidecar up in 1.8 s; "what needs me most" answered in
+16 s with one tool call; a full deep-dive (thread + live comments + impact analysis) in 29 s;
+a stored draft reply in 14 s (PLAN.md §8, M6).
 
 ---
 
@@ -291,11 +312,11 @@ an explicit override path → the bundled copy → `github-mcp-server` on `PATH`
 
 ```
 main.go                  Wails application entry point (services, window, tray, scheduler)
-cmd/gitinbox/            headless CLI (accounts, mcp tools/call, sync, inbox, mine, judge, analyze, prose, eval)
+cmd/gitinbox/            headless CLI (accounts, mcp tools/call, sync, inbox, mine, judge, analyze, prose, eval, agent)
 internal/app/            wiring: db + secrets + MCP binary + pipeline; legacy data-dir migration
 internal/ghmcp/          MCP client for github-mcp-server, per-write-mode tool allowlist
 internal/mcpbin/         locate/extract the bundled GitHub MCP server
-internal/store/          SQLite (pure Go) + embedded migrations 0001–0006
+internal/store/          SQLite (pure Go) + embedded migrations 0001–0007
 internal/secrets/        OS keyring with 0600-file fallback
 internal/classify/       activity kind + relation tags from notification fields
 internal/filter/         rule-based noise filter (bots, green CI, releases, mutes)
@@ -305,9 +326,12 @@ internal/scoring/        composite priority from stored judgments + user weights
 internal/profiles/       impact profiles (YAML, built-ins embedded), layer/signal/surface analysis
 internal/llm/            schema-constrained generation (Ollama): impact notes, summaries, digests
 internal/eval/           metrics (binary/ordinal/categorical/NDCG) and the weight tuner
+internal/localapi/       loopback JSON API (bearer token) the agent's tools call
+internal/agent/          pi sidecar: locate, agent dir, JSONL RPC client, transcript; embedded extension + prompt
 internal/pipeline/       sync → classify → filter → store; mine; judge; impact; prose; eval; scheduler
-internal/services/       Wails services: Accounts, Inbox, Mine, Diagnostics, Watches, Judge, Impact, Profiles, Prose, Eval
-frontend/                React + TS + Tailwind (Vite); views Inbox, Mine, Impact, Digest, Eval, Profiles, Settings, Diagnostics
+internal/services/       Wails services: Accounts, Inbox, Mine, Diagnostics, Watches, Judge, Impact, Profiles, Prose, Eval, Agent
+frontend/                React + TS + Tailwind (Vite); views Inbox, Mine, Impact, Digest, Agent, Eval, Profiles, Settings, Diagnostics
+agent/                   package.json pinning pi for development (node_modules git-ignored)
 docs/                    ARCHITECTURE, USER-DOCUMENTATION, INSTALLATION, TypeSafe reference copies
 build/                   Wails build config, platform Taskfiles, nfpm packaging
 .github/workflows/       Linux amd64 + arm64 CI builds

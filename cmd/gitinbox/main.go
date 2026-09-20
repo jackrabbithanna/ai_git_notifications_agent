@@ -22,6 +22,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"gitinbox/internal/agent"
+	"gitinbox/internal/app"
 	"gitinbox/internal/mcpbin"
 	"gitinbox/internal/pipeline"
 	"gitinbox/internal/secrets"
@@ -79,6 +81,8 @@ func main() {
 		err = cmdUsage(ctx)
 	case "eval":
 		err = cmdEval(ctx, os.Args[2:])
+	case "agent":
+		err = cmdAgent(ctx, os.Args[2:])
 	case "read", "done", "snooze", "undone":
 		err = cmdAction(ctx, os.Args[1], os.Args[2:])
 	case "help", "-h", "--help":
@@ -114,6 +118,7 @@ func usage() {
   settings [show | set KEY VALUE]            KEY: provider(auto|jev|ollama|off) jev.model jev.url ollama.url ollama.model max concurrency interests
                                              impact.auto impact.max impact.note-model impact.note-level(2|3|4) impact.scan-landed impact.landed-days
                                              summary.model summary.top summary.every digest.model digest.auto digest.hours notify.needs-me notify.impact-level(3|4)
+                                             agent.enabled agent.autostart agent.pi-path agent.model agent.thinking(off|low|medium|high)
   jev-key --token-file F                     store the TypeSafe Jev API key in the keyring (empty file removes it)
   analyze [--account L] [--profile ID] [--force] [--note] REPO#N   impact-analyse one PR/MR (auto profile, generic fallback)
   analyze [--account L] --pending            analyse pending PR threads in profile repos + scan landed changes
@@ -130,6 +135,9 @@ func usage() {
   eval report [--out DIR]                    metrics per provider (+ writes Markdown; default eval/ in the repo)
   eval tune [--iters N] [--apply]            search weights that maximise NDCG@25 on your labels
   eval export FILE | eval import FILE        labels as JSON lines
+  agent status                               where pi is, which model, whether the sidecar runs
+  agent chat [--model M] PROMPT…             one-shot chat with the pi sidecar (tools over the local API); streams the answer
+  agent models                               models the sidecar can use (from the Ollama server)
   read|done|undone [--account L] THREAD_ID   local triage state (mirrored to GitHub only in write mode 'notifications')
   snooze [--account L] --for 2h THREAD_ID
   version
@@ -790,6 +798,10 @@ func cmdSettings(ctx context.Context, args []string) error {
 		ps, _ := e.pipe.ProseSettings(ctx)
 		fmt.Printf("summary.model: %s\nsummary.top:   %d (every %d min)\ndigest.model:  %s\ndigest.auto:   %v (every %d h, max %d threads)\nnotify.needs-me: %v\nnotify.impact-level: %d\n",
 			orUnknown(ps.SummaryModel), ps.TopN, ps.SummarizeEveryMin, orUnknown(ps.DigestModel), ps.AutoDigest, ps.DigestEveryH, ps.DigestMaxThreads, ps.NotifyNeedsMe, ps.NotifyImpactMinLevel)
+		as, _ := e.pipe.AgentSettings(ctx)
+		_, agentModel := e.pipe.AgentModel(ctx)
+		fmt.Printf("agent.enabled: %v\nagent.autostart: %v\nagent.pi-path: %s\nagent.model:   %s (resolved: %s)\nagent.thinking: %s\n",
+			as.Enabled, as.AutoStart, orUnknown(as.PiPath), orUnknown(as.Model), orUnknown(agentModel), as.Thinking)
 		return nil
 	}
 	if args[0] != "set" || len(args) < 3 {
@@ -867,6 +879,34 @@ func cmdSettings(ctx context.Context, args []string) error {
 			fmt.Sscanf(val, "%d", &is.LandedLookbackDays)
 		}
 		if err := e.pipe.SetImpactSettings(ctx, is); err != nil {
+			return err
+		}
+		fmt.Printf("%s = %s\n", key, val)
+		return nil
+	case "agent.enabled", "agent.autostart", "agent.pi-path", "agent.model", "agent.thinking":
+		as, err := e.pipe.AgentSettings(ctx)
+		if err != nil {
+			return err
+		}
+		onoff := val == "true" || val == "on" || val == "1"
+		switch key {
+		case "agent.enabled":
+			as.Enabled = onoff
+		case "agent.autostart":
+			as.AutoStart = onoff
+		case "agent.pi-path":
+			as.PiPath = val
+		case "agent.model":
+			as.Model = val
+		case "agent.thinking":
+			switch val {
+			case "off", "low", "medium", "high":
+				as.Thinking = val
+			default:
+				return errors.New("agent.thinking must be off|low|medium|high")
+			}
+		}
+		if err := e.pipe.SetAgentSettings(ctx, as); err != nil {
 			return err
 		}
 		fmt.Printf("%s = %s\n", key, val)
@@ -1490,4 +1530,128 @@ func orUnknown(s string) string {
 		return "unknown"
 	}
 	return s
+}
+
+// --- agent (M6) ---------------------------------------------------------------
+
+func cmdAgent(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("agent: want status | chat [--model M] PROMPT… | models")
+	}
+	switch args[0] {
+	case "status":
+		core, err := app.Open(nil, nil)
+		if err != nil {
+			return err
+		}
+		defer core.Close()
+		as, _ := core.Pipe.AgentSettings(ctx)
+		url, model := core.Pipe.AgentModel(ctx)
+		fmt.Printf("enabled: %v  autostart: %v  thinking: %s\nollama: %s  model: %s\n", as.Enabled, as.AutoStart, as.Thinking, url, orUnknown(model))
+		info, err := agent.Locate(as.PiPath)
+		if err != nil {
+			fmt.Printf("pi: %v\n", err)
+			return nil
+		}
+		v, verr := agent.Version(ctx, info.Path)
+		fmt.Printf("pi: %s (%s) version %s\n", info.Path, info.Source, orUnknown(v))
+		if verr != nil {
+			fmt.Printf("pi --version failed: %v\n", verr)
+		}
+		fmt.Printf("agent dir: %s\n", filepath.Join(filepath.Dir(core.DBPath), "agent"))
+		return nil
+	case "models":
+		core, err := app.Open(nil, nil)
+		if err != nil {
+			return err
+		}
+		defer core.Close()
+		m, err := core.AgentManager(ctx)
+		if err != nil {
+			return err
+		}
+		models, err := m.Models(ctx)
+		if err != nil {
+			return err
+		}
+		for _, mm := range models {
+			fmt.Printf("%s/%s\n", mm.Provider, mm.ID)
+		}
+		return nil
+	case "chat":
+		fs := flag.NewFlagSet("agent chat", flag.ContinueOnError)
+		model := fs.String("model", "", "Ollama model id for this chat")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
+		if prompt == "" {
+			return errors.New("agent chat: want a PROMPT")
+		}
+		var lastTool string
+		core, err := app.Open(func(name string, data any) {
+			if name != app.AgentEvent {
+				return
+			}
+			ev, ok := data.(agent.UIEvent)
+			if !ok {
+				return
+			}
+			switch ev.Type {
+			case "text_delta":
+				fmt.Print(ev.Delta)
+			case "tool_start":
+				a, _ := json.Marshal(ev.Args)
+				lastTool = ev.ToolName
+				fmt.Fprintf(os.Stderr, "\n▸ %s %s\n", ev.ToolName, a)
+			case "tool_end":
+				status := "ok"
+				if ev.IsError {
+					status = "ERROR"
+				}
+				fmt.Fprintf(os.Stderr, "◂ %s %s (%d bytes)\n", ev.ToolName, status, len(ev.Result))
+				if ev.IsError {
+					fmt.Fprintln(os.Stderr, "  "+strings.SplitN(ev.Result, "\n", 2)[0])
+				}
+				lastTool = ""
+			case "error", "exit", "message_end":
+				if ev.Error != "" {
+					fmt.Fprintln(os.Stderr, "\nerror:", ev.Error)
+				}
+			}
+		}, nil)
+		if err != nil {
+			return err
+		}
+		defer core.Close()
+		_ = lastTool
+		if *model != "" {
+			as, _ := core.Pipe.AgentSettings(ctx)
+			as.Model = *model
+			if err := core.Pipe.SetAgentSettings(ctx, as); err != nil {
+				return err
+			}
+		}
+		m, err := core.AgentManager(ctx)
+		if err != nil {
+			return err
+		}
+		start := time.Now()
+		if err := m.Start(ctx); err != nil {
+			return err
+		}
+		st := m.Status()
+		fmt.Fprintf(os.Stderr, "pi %s · model %s/%s · started in %s\n", st.Version, st.Provider, st.Model, time.Since(start).Round(time.Millisecond))
+		if err := m.Prompt(ctx, prompt); err != nil {
+			return err
+		}
+		if err := m.WaitIdle(ctx); err != nil {
+			_ = m.Abort(context.Background())
+			return err
+		}
+		fmt.Println()
+		fmt.Fprintf(os.Stderr, "(%s total, %d transcript entries)\n", time.Since(start).Round(time.Millisecond), m.Status().Messages)
+		return m.Stop()
+	}
+	return fmt.Errorf("agent: unknown subcommand %q", args[0])
 }

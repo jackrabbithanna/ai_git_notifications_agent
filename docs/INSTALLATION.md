@@ -20,7 +20,8 @@ For how it is built internally, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | Network access | `github.com` (or your GitHub Enterprise host), your GitLab hosts, `api.typesafe.ai` for the Jev judge, and your Ollama server. |
 | A GitHub and/or GitLab personal access token | Details in §4. |
 | Optional: TypeSafe Jev API key | The calibrated triage/impact judge. Get one at typesafe.ai. |
-| Optional: an Ollama server | Local or on the LAN; used for summaries, digests, impact notes, and as a fallback judge. |
+| Optional: an Ollama server | Local or on the LAN; used for summaries, digests, impact notes, as a fallback judge, and by the agent. |
+| Optional: pi (pi.dev) + Node 22.19+ | The agent sidecar for the Agent view / `agent chat`. Bring your own: `npm install -g @earendil-works/pi-coding-agent`, or `cd agent && npm install` in the repository. |
 
 For building from source you also need Go 1.26+, Node 22+ with npm, a C compiler, `pkg-config`,
 and the GTK/WebKit *development* packages (§3).
@@ -202,6 +203,7 @@ On first start the application creates:
 | `~/.local/share/gitinbox/gitinbox.db` | SQLite database (accounts, threads, judgments, analyses, summaries, labels, settings). `$XDG_DATA_HOME` is honoured; `GITINBOX_DB=/path/to.db` overrides. |
 | `~/.local/share/gitinbox/gitinbox.log` | Application log (also written to stderr). |
 | `~/.local/share/gitinbox/bin/` | The bundled `github-mcp-server`, extracted once per version. |
+| `~/.local/share/gitinbox/agent/` | pi's app-owned config (`models.json`, `settings.json`, `extensions/gitinbox.ts`) and chat sessions; created when the agent first starts. |
 | keyring service `gitinbox` | `account:<id>` tokens and `jev.api_key`. |
 | `~/.config/gitinbox/secrets.json` | Only when no keyring is reachable (`0600`). |
 
@@ -267,7 +269,31 @@ your own YAML with `profiles import my-project.yaml` (schema in the user documen
 threads in profile repositories are analysed automatically after each sync (20 per run by default);
 any PR can be analysed on demand.
 
-### 6.4 Desktop notifications
+### 6.4 Agent (pi sidecar)
+
+The Agent view needs [pi](https://pi.dev) and an Ollama model that supports tool calling. Node
+22.19 or newer is required by pi.
+
+```sh
+# either globally …
+npm install -g @earendil-works/pi-coding-agent
+pi --version                                     # 0.86.1 at the time of writing
+# … or pinned inside the repository (what development uses)
+cd agent && npm install && cd ..                  # → agent/node_modules/.bin/pi, found automatically
+
+bin/gitinbox-cli agent status                    # where pi is, which model the agent will use
+bin/gitinbox-cli settings set agent.model qwen3.5:9b   # optional; defaults to the summary/judge model
+bin/gitinbox-cli agent chat "What needs me most right now? Top 3 with links."
+```
+
+Or in the app: **Settings → Agent** (enable, autostart, pi path, model, thinking). GitInbox writes
+pi's configuration into `~/.local/share/gitinbox/agent/` (`models.json`, `settings.json`, the
+extension, sessions) on every start and runs pi with `PI_CODING_AGENT_DIR` pointing there, so your
+own `~/.pi` setup is never touched and pi runs with no built-in tools, offline, and without
+telemetry. Tool results can be large: give the model a bigger context on the Ollama server
+(`OLLAMA_CONTEXT_LENGTH=32768` in its environment) if answers get cut off.
+
+### 6.5 Desktop notifications
 
 Enabled by default for threads entering *Needs me* and for impact analyses at level *certain*
 (`notify.impact-level 3`). **Settings → Summaries, digest & notifications → Test notification**
@@ -373,6 +399,9 @@ the file backend). Both the app and the CLI can run at the same time: they share
 | Ollama judgments or summaries take minutes | The model does not fit in VRAM or is a thinking model without `think` support. Use a smaller model; GitInbox already sends `think: false`. |
 | `sync already running` | A sync for that account is in progress (app + CLI at the same time). Wait for it to finish. |
 | No tray icon on GNOME | GNOME needs a StatusNotifier/AppIndicator extension for tray icons; the window and notifications work without it. |
+| Agent: `pi not found` | Install pi globally or `cd agent && npm install`; or set the path in Settings → Agent. `agent status` shows what the app would use. |
+| Agent: `pi did not answer get_state` / exits immediately | Run `GITINBOX_DEBUG=1 bin/gitinbox-cli agent chat hi` — pi's stderr goes to the log (`gitinbox.log`); typical causes are an old Node (< 22.19) or an unreachable Ollama URL. |
+| Agent answers are truncated or the model ignores tools | Use a tool-capable model (`qwen3.5:9b`, `gpt-oss:20b`, `gemma4:12b`) and raise the Ollama context length (`OLLAMA_CONTEXT_LENGTH=32768`). |
 | Desktop notifications never appear | Run **Test notification** in Settings; make sure a notification daemon is on the session D-Bus. The CLI never sends notifications. |
 | I want to start over | Quit the app, delete `~/.local/share/gitinbox/`, remove the keyring entries (`account remove` deletes each account's token; the Jev key is removed by `jev-key --token-file /dev/null`). |
 

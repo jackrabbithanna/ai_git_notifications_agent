@@ -11,7 +11,7 @@ import { openURL } from "../lib/browser";
 import { fmtDuration, reasonLabel, timeAgo } from "../lib/format";
 import { Button, Chip, ErrorText, errMsg } from "../lib/ui";
 
-type Props = { refreshKey: number; accountId: number; accounts: Account[] };
+type Props = { refreshKey: number; accountId: number; accounts: Account[]; onDeepDive?: (text: string) => void };
 
 type Row = { sc: Scored; group: string; groupLabel: string; tags: Set<string> };
 
@@ -130,8 +130,12 @@ function writePref(key: string, v: string) {
   }
 }
 
-export default function Inbox({ refreshKey, accountId, accounts }: Props) {
+export default function Inbox({ refreshKey, accountId, accounts, onDeepDive }: Props) {
   const forgeOf = (id: number) => accounts.find((a) => a.id === id)?.forge ?? "github";
+  const accountRef = (id: number) => {
+    const a = accounts.find((x) => x.id === id);
+    return a ? `${a.login}@${a.host}` : String(id);
+  };
   const [view, setView] = useState<InboxView | null>(null);
   const [includeRead, setIncludeRead] = useState(false);
   const [includeNoise, setIncludeNoise] = useState(false);
@@ -408,6 +412,8 @@ export default function Inbox({ refreshKey, accountId, accounts }: Props) {
                 onToggleDetails={() => setOpenDetails((cur) => (cur === `${sc.thread.accountId}:${sc.thread.threadId}` ? "" : `${sc.thread.accountId}:${sc.thread.threadId}`))}
                 onChanged={load}
                 onAnalyze={analyze}
+                accountRef={accountRef(sc.thread.accountId)}
+                onDeepDive={onDeepDive}
               />
             ))}
             {visible.length === 0 && <li className="px-3 py-4 text-sm text-neutral-500">Nothing matches this tab and filter.</li>}
@@ -429,6 +435,8 @@ function ThreadRow({
   onToggleDetails,
   onChanged,
   onAnalyze,
+  accountRef,
+  onDeepDive,
 }: {
   sc: Scored;
   act: (label: string, p: Promise<unknown>) => void;
@@ -440,6 +448,8 @@ function ThreadRow({
   onToggleDetails: () => void;
   onChanged: () => void;
   onAnalyze: (accountId: number, repo: string, number: number) => void;
+  accountRef: string;
+  onDeepDive?: (text: string) => void;
 }) {
   const t = sc.thread;
   const s = sc.score;
@@ -539,6 +549,19 @@ function ThreadRow({
             title="Impact analysis against the matching profile (generic if none); result appears as an impact chip and in the Impact view"
           >
             {s.impactLevel >= 0 ? "Re-analyze" : "Analyze"}
+          </Button>
+        )}
+        {onDeepDive && (
+          <Button
+            kind="ghost"
+            onClick={() =>
+              onDeepDive(
+                `Deep-dive thread ${accountRef}/${t.threadId} (${t.repo}${numPrefix}${t.subjectNumber} "${t.title}"): what is it about, what is asked of me, the current state, and one recommended next action.`,
+              )
+            }
+            title="Ask the agent to read the thread, its discussion and (for PRs) the impact analysis"
+          >
+            Deep-dive
           </Button>
         )}
         <Button kind="ghost" onClick={onToggleDetails} title="Full summary and impact analysis">

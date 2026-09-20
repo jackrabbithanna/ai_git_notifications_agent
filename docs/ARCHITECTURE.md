@@ -1,8 +1,9 @@
 # GitInbox — Architecture
 
 This document describes how GitInbox is built: process model, packages, data flow, data model,
-the forge seam, the AI layer, the impact engine, evaluation, security, frontend, build and the
-extension points. It is written against the code as of 2026-09-20 (milestones M0–M5 complete);
+the forge seam, the AI layer, the impact engine, evaluation, the agent sidecar, security, frontend,
+build and the extension points. It is written against the code as of 2026-09-20 (milestones M0–M6
+complete);
 `PLAN.md` holds the decision history and live measurements per milestone.
 
 ---
@@ -34,7 +35,7 @@ extension points. It is written against the code as of 2026-09-20 (milestones M0
 ┌──────────────── gitinbox (Wails v3 desktop app, one Go binary) ────────────────┐
 │  WebKitGTK webview: React/TS/Tailwind  ◄─ generated TS bindings + events ─►     │
 │  Wails services (Go): Accounts Inbox Mine Diagnostics Watches Judge Impact      │
-│                       Profiles Prose Eval + notifications (D-Bus)               │
+│                       Profiles Prose Eval Agent + notifications (D-Bus)         │
 │                                    │                                             │
 │                             internal/app.App  (db, secrets, MCP binary, pipeline)│
 │                                    │                                             │
@@ -46,6 +47,8 @@ extension points. It is written against the code as of 2026-09-20 (milestones M0
 │                              github-mcp-server   GitLab API    api.typesafe.ai │
 │                              (one subprocess      (client-go)   Ollama /api/chat│
 │                               per account)                                      │
+│  localapi (127.0.0.1:random, bearer token) ◄─ tools ─ pi --mode rpc (sidecar,   │
+│  internal/agent: JSONL client, transcript)     Ollama /v1 via models.json)      │
 └─────────────────────────────────────────────────────────────────────────────────┘
        gitinbox-cli (cmd/gitinbox): same internal/app + pipeline, no GUI, no D-Bus
 ```
@@ -72,13 +75,13 @@ extension points. It is written against the code as of 2026-09-20 (milestones M0
 | Package | Responsibility |
 |---|---|
 | `internal/app` | Wiring: resolve DB path (`GITINBOX_DB` or `$XDG_DATA_HOME/gitinbox/gitinbox.db`), run the legacy `ghinbox` data-dir migration, open the store, log to `gitinbox.log` + stderr, locate the MCP binary, build the pipeline with a GitLab factory; `StartScheduler`, `Close`. |
-| `internal/store` | SQLite (`modernc.org/sqlite`, CGO-free) with embedded migrations `0001`–`0006`; typed accessors for every table; thread upsert with local-state preservation; queries for inbox, mine, analyses, summaries, labels, usage. |
+| `internal/store` | SQLite (`modernc.org/sqlite`, CGO-free) with embedded migrations `0001`–`0007`; typed accessors for every table; thread upsert with local-state preservation; queries for inbox, mine, analyses, summaries, labels, usage. |
 | `internal/secrets` | `Store{Get,Set,Delete,Backend}`: OS keyring (Secret Service via `zalando/go-keyring`, service `gitinbox`, legacy fallback to `ghinbox` with copy-on-read) or a `0600` JSON file under `~/.config/gitinbox/`. Keys: `account:<id>`, `jev.api_key`. |
 | `internal/mcpbin` | `Locate(Options)`: override path → bundled (extracted) → `PATH`; `BundledVersion`. |
 | `internal/ghmcp` | MCP client for one `github-mcp-server` process: spawn with flags/env, `CommandTransport`, per-mode tool allowlist, `CallRaw` with one restart-and-retry on transport failure, call/restart counters, typed wrappers (`GetMe`, `ListNotifications`, `GetNotificationDetails`, `DismissNotification`, `ManageNotificationSubscription`, `IssueRead`, `PullRequestRead`, `SearchIssues`, `SearchPullRequests`, `ListPullRequests`), JSON-in-text parsing, `NewForTest` over in-memory transports. |
 | `internal/classify` | Activity kind + relation tags + `IsNewItem` from notification fields; HTML URL derivation. |
 | `internal/filter` | `Rules` (settings key `filter.rules`) and `Apply` → keep or noise with a reason (`bot`, `ci_success`, `release`, `muted_repo`, `keyword`). |
-| `internal/source` | The forge seam (§5): `Source` plus optional `Watcher`, `Enricher`, `Changer`, `LandedLister`, `ScopeReporter`; `ChangeSet`; `ErrWritesDisabled`, `ErrNotMirrorable`; `TrimText`. |
+| `internal/source` | The forge seam (§5): `Source` plus optional `Watcher`, `Enricher`, `Changer`, `LandedLister`, `ScopeReporter`, `Discusser`; `ChangeSet`, `Comment`; `ErrWritesDisabled`, `ErrNotMirrorable`; `TrimText`. |
 | `internal/source/github` | `Source` over `ghmcp`: paged `list_notifications` → classified threads; Mine via four searches; enrichment via `issue_read`/`pull_request_read` (+ latest comment by anchor id); `Changes` (PR get + paged files, unified-diff split fallback); `RecentlyMerged` via `list_pull_requests`; writes wrapped into `ErrWritesDisabled` when the allowlist refuses. |
 | `internal/source/gitlab` | `Source` over client-go: to-dos → `todo:<id>` threads with `ReadExcept`; watched-project events grouped per issue/MR with to-do precedence; Mine from five queries; enrichment; `Changes` (MR + paged diffs); `RecentlyMerged`; gated writes; token scopes. |
 | `internal/judge` | `Question`/`Answer`/`Response`/`Judge` types mirroring the Jev contract; question sets `Triage()` (`triage.v1`) and `Impact()` (`impact.v1`) with their JSON state structs; probability normalisation; `Fake` for tests. `judge/jev` (HTTP client, calibrated) and `judge/ollama` (structured output, uncalibrated). |
@@ -87,6 +90,8 @@ extension points. It is written against the code as of 2026-09-20 (milestones M0
 | `internal/llm` | `Generator` interface, `Result`/`Usage`, JSON schemas for `ImpactNote`, `ThreadSummary`, `Digest`; `llm/ollama` generator and the shared `PostChat` (adds `think:false`, retries without it on rejection). |
 | `internal/pipeline` | Orchestration: sources cache, sync, mine, mirror, scheduler (`pipeline.go`); judge settings/provider/candidates/explain/score (`judge.go`); profiles, analysis, landed scan, notes, impact views (`impact.go`); summaries, digest, notifications, prose scheduling (`prose.go`); labels, samples, eval, tune, report, import/export (`eval.go`). Emits UI events. |
 | `internal/eval` | Metrics (`Evaluate` → `Report`), `NDCG`, Spearman, `Tune` (coordinate descent) and `Objective`. |
+| `internal/localapi` | Loopback HTTP JSON API for the agent's tools (§9a): threads top/search/detail/find, summaries, live comments, Mine, impact list/detail (+analyse/note), PR changes, read-only GitHub tool pass-through, local actions, drafts. Bearer token generated per process; binds 127.0.0.1:0. |
+| `internal/agent` | pi sidecar (§9a): `Locate` (override → PATH → repo `agent/node_modules`), `Prepare` (agent dir: `models.json`, `settings.json`, embedded `ext/gitinbox.ts`), `RenderPrompt` (`prompt.md`), `Client` (JSONL RPC over stdin/stdout with id-correlated responses), `Manager` (lifecycle, transcript, compact `UIEvent`s, auto-cancel of extension dialogs). |
 | `internal/services` | Thin Wails services exposing the pipeline to the frontend (§10). |
 | `cmd/gitinbox` | The CLI. |
 | `frontend/` | React 18 + TypeScript + Tailwind v4, Vite; views under `src/views`, helpers under `src/lib`; generated bindings under `frontend/bindings/gitinbox/...` (git-ignored). |
@@ -200,6 +205,7 @@ type Enricher      interface { Enrich(ctx, store.Thread) (store.Enrichment, erro
 type Changer       interface { Changes(ctx, repo, number) (ChangeSet, error) }
 type LandedLister  interface { RecentlyMerged(ctx, repo, since, limit) ([]ChangeRef, error) }
 type ScopeReporter interface { TokenScopes(ctx) (string, error) }
+type Discusser     interface { Comments(ctx, repo, number, subjectType, limit) ([]Comment, error) } // agent deep-dives
 ```
 
 **GitHub** (`source/github`): `ListNotifications` 50/page, up to 40 pages, `include_read_notifications`
@@ -242,6 +248,7 @@ database.
 | `0004_impact` | `profiles(id, yaml, …)`, `profile_flags(id, enabled)`, `pr_analysis(account_id, forge, repo, number, kind, head_sha, thread_version, profile_id, title, html_url, author, state, merged_at, updated_at, report_json, questions_version, provider, model, calibrated, answers_json, change_kind, impact_level, note_json, note_model, analysed_at, …)`, `threads.item_created_at`, `sync_state.last_landed_scan` |
 | `0005_prose` | `summaries(account_id, thread_id, thread_version, model, content_json, usage_json, latency_ms, created_at)`, `digests(id, period_start, period_end, model, content_json, usage_json, latency_ms, thread_count, created_at)`, `notified(key, at)` |
 | `0006_eval` | `labels(account_id, thread_id, category, requires_action, urgency, relevance, priority, resolved, noise, note, …)`, `pr_labels(account_id, repo, number, impact_level, change_kind, note)`, `eval_judgments` (same shape as `judgments`, keyed additionally by provider) |
+| `0007_agent` | `drafts(account_id, thread_id, repo, number, text, model, created_at)` — reply drafts the agent stores; never posted |
 
 Key semantics:
 
@@ -254,7 +261,7 @@ Key semantics:
 - `items` is the Mine set: `(account_id, repo, number)` with `kind` issue|pr|mr and merged
   `relations`.
 - `settings` holds JSON blobs: `filter.rules`, `judge.settings`, `scoring.weights`,
-  `impact.settings`, `prose.settings`, `prose.state` (last top-N / digest timestamps).
+  `impact.settings`, `prose.settings`, `prose.state` (last top-N / digest timestamps), `agent.settings`.
 - `UsageStats` aggregates tokens and latency across `judgments`, `pr_analysis`, notes,
   `summaries` and `digests` by provider/model.
 
@@ -374,6 +381,63 @@ Jev: ~0.6 s and ~1.4k input tokens per triage; impact judgment on a 6-file PR 1.
 
 ---
 
+## 9a. Agent sidecar (`internal/agent`, `internal/localapi`)
+
+**Shape.** pi (pi.dev) is TypeScript, so it runs as a child process in RPC mode; GitInbox is the
+client. One `Manager` per app, created lazily by `app.AgentManager` from `agent.settings` and
+rebuilt (`Reconfigure`) when a relevant setting changes. The loopback API starts on first use.
+
+**Start sequence** (`Manager.Start`): `Locate` the binary (settings override → `pi` on PATH →
+`<cwd|exe>/../agent/node_modules/.bin/pi`) and read `pi --version`; `Prepare` the agent dir
+(`$XDG_DATA_HOME/gitinbox/agent`: `models.json` with provider `ollama` at `<ollama.url>/v1`,
+`api: openai-completions`, `compat{supportsDeveloperRole:false, supportsReasoningEffort:false}`
+and every model the Ollama server lists; `settings.json` with `defaultProjectTrust: never`,
+telemetry off, compaction on; `extensions/gitinbox.ts` from the embedded source; `sessions/`);
+spawn `pi --mode rpc --no-builtin-tools --no-extensions -e <ext> --no-skills --no-prompt-templates
+--no-themes --no-context-files --no-approve --offline --session-dir <sessions> --provider ollama
+--model <id> --thinking <level> --system-prompt <rendered prompt>` with `PI_CODING_AGENT_DIR`,
+`PI_CODING_AGENT_SESSION_DIR`, `PI_SKIP_VERSION_CHECK=1`, `PI_OFFLINE=1`, `PI_TELEMETRY=0`,
+`GITINBOX_API_URL`, `GITINBOX_API_TOKEN` in the environment and cwd = agent dir; send `get_state`
+as the handshake.
+
+**Protocol** (`Client`): commands are JSON lines on stdin with an `id`; the reader splits stdout on
+`\n`, routes `{"type":"response","id":…}` to the waiting caller and everything else to
+`Manager.handleEvent`. Events used: `agent_start`/`agent_end` (busy flag, idle channel for
+`WaitIdle`), `message_start`/`message_update`(`text_delta`, `thinking_delta`)/`message_end`
+(assistant text; `stopReason: error` becomes an error entry), `tool_execution_start`/`_end`
+(tool entries with args and a result capped at 8 KB), `extension_error`, `auto_retry_start`,
+`extension_ui_request` (dialog methods are answered `cancelled: true` so pi never blocks). Commands
+used: `prompt` (with `streamingBehavior: followUp` when a run is active), `abort`, `new_session`,
+`get_state`, `get_available_models`, `set_model`, `get_last_assistant_text`.
+
+**Transcript and UI events.** The Go side keeps the canonical transcript (`Message{role user |
+assistant | tool | error, text, tool{name,args,result,isError,done}}`); the UI receives compact
+`agent:event`s (`text_delta` with the message id, `tool_start`, `tool_end`, `message_end`,
+`agent_end`, `status`, `exit`, `error`) and reloads the transcript on structural events, appending
+deltas in between.
+
+**Tools → local API.** The extension's tools are thin `fetch` calls with the bearer token; each
+output is capped at 40 KB before it reaches the model. Routes: `GET /v1/accounts`, `/v1/tools`,
+`/v1/threads?q=&bucket=&account=&limit=&include_read=`, `/v1/threads/find?account=&repo=&number=`,
+`/v1/threads/{account}/{id}` (+`/summary?generate=`, `/comments?limit=`),
+`POST /v1/threads/{account}/{id}/{read|done|undone|snooze|mute}`, `GET /v1/mine`, `/v1/impact`,
+`/v1/impact/{account}?repo=&number=&analyze=&note=`, `/v1/changes/{account}?repo=&number=&patches=`,
+`POST /v1/github/{account}/call {tool,args}` (refused unless `tool` is in
+`ghmcp.AllowedTools(readonly)`), `GET|POST /v1/drafts`. `{account}` accepts an id or `login@host`
+(`pipeline.ResolveAccount`). Live discussion comes from the new `source.Discusser` (GitHub:
+`issue_read get_comments`, `pull_request_read get_reviews|get_review_comments|get_comments`;
+GitLab: issue/MR notes without system notes).
+
+**Why not attach the MCP server to pi.** pi has no MCP client (it uses extensions/skills), and a
+second `github-mcp-server` per account would duplicate token handling. Routing reads through the
+app's existing client keeps one process per account and the same read-only guarantee.
+
+**Failure handling.** A missing binary, missing model or unreachable API fails `Start` with a
+message the UI shows; a pi exit mid-run appends an error entry and flips `running` off (the next
+prompt restarts it); tool errors are returned to the model as errors, not swallowed.
+
+---
+
 ## 10. Frontend and services
 
 **Services** (Go, `internal/services`; bindings generated in interface mode, so TS types are plain
@@ -385,15 +449,18 @@ OllamaModels, Weights, SaveWeights, DefaultWeights, Run, Explain}`, `ImpactServi
 Analyze, Note, RunPending, Settings, SaveSettings}`, `ProfilesService{List, Save, Validate,
 Delete, SetEnabled}`, `ProseService{Summary, Summarize, SummarizeTop, GenerateDigest, Digests,
 Settings, SaveSettings, TestNotification}`, `EvalService{Queue, SetLabel, SetPRLabel, PRLabels,
-Overview, Evaluate, EvaluateImpact, EvalJudge, Tune, Report}`.
+Overview, Evaluate, EvaluateImpact, EvalJudge, Tune, Report}`. `AgentService{Status, Locate, Start, Stop, Prompt, Abort, NewSession, Transcript,
+Models, SetModel, Settings, SaveSettings, Draft, DeleteDraft}`.
 
 **Events** (pipeline → UI): `inbox:updated`, `sync:report`, `sync:error`, `judgments:updated`,
-`impact:updated`, `summary:updated`, `digest:updated`, `labels:updated`. `App.tsx` subscribes once
+`impact:updated`, `summary:updated`, `digest:updated`, `labels:updated`, `draft:saved`, and
+`agent:event` (agent.UIEvent). `App.tsx` subscribes once
 and bumps a refresh key; the tray listens to `inbox:updated` to refresh its count.
 
 **Views** (`frontend/src/views`): `Inbox` (tabs from group kinds, sort, tag filters incl. dynamic
-account tags, row actions; `ThreadDetails` fieldset and `Explain` panel), `Mine`, `Impact`
-(exports `ImpactDetails`, `levelName`), `Digest`, `Eval`, `Profiles`, `Settings`, `Diagnostics`.
+account tags, row actions incl. Deep-dive; `ThreadDetails` fieldset with the agent's draft and
+`Explain` panel), `Mine`, `Impact` (exports `ImpactDetails`, `levelName`), `Digest`, `Agent`
+(streamed transcript, tool cards, model select), `Eval`, `Profiles`, `Settings`, `Diagnostics`.
 `lib/ui.tsx` (Button, Chip, Card, ErrorText), `lib/format.ts` (durations, relative time, reason
 labels), `lib/browser.ts` (open URLs). Per-viewer preferences (`inbox.tab`, `inbox.sort`) live in
 `localStorage`.
@@ -472,6 +539,12 @@ left for the user to delete.
 - `internal/pipeline`: store-backed tests with fake sources/judges/generators for judge candidates
   and explain, impact pending/landed throttle and notes, prose scheduling and notification de-dup,
   eval label queue, samples and tuning.
+- `internal/localapi`: `httptest` over a real store and pipeline — auth, accounts, top/search,
+  detail/find, actions (done/undone/snooze), drafts, the read-only guard on `github/call`, and a
+  real loopback listener.
+- `internal/agent`: the test binary doubles as a fake `pi` (`GITINBOX_FAKE_PI=1`) that speaks the
+  RPC protocol — start handshake, args/env passed, prompt → transcript (assistant, tool, assistant),
+  models, set_model, new session, stop; `Prepare`/`RenderPrompt` file and template checks.
 - `internal/store`: migrations on a fresh database, thread upsert rules (local state preserved,
   cleared on new activity), queries.
 
@@ -481,14 +554,9 @@ left for the user to delete.
 
 ## 14. Extension points and roadmap
 
-- **pi (pi.dev) agent sidecar — M6, not in v1.** Planned as an `AgentService` that spawns
-  `pi --mode rpc` (JSONL over stdio) with an app-owned agent directory (`models.json` pointing at
-  Ollama's OpenAI-compatible endpoint, a system prompt, coding tools disabled), a TypeScript
-  extension exposing `search_threads`, `get_thread`, `get_thread_summary`, `list_top_priority`,
-  `list_mine`, `get_pr_analysis`, `mark_done`, `snooze` over a loopback JSON API (`localapi`,
-  also not yet built), and the same `github-mcp-server` binary attached **always read-only** for
-  deep-dives; `draft_reply` drafts only. Chat-with-inbox panel and thread deep-dive drawer in the
-  UI. Rationale for the sidecar shape: pi is TypeScript; embedding would need a Node host.
+- **Agent tools**: add a route in `internal/localapi` and a `pi.registerTool` block in
+  `internal/agent/ext/gitinbox.ts` (typebox schema, `api()` call, `out()` truncation); keep tools
+  read-only or local-state, and name them in `prompt.md` if the model should prefer them.
 - **New judge provider**: implement `judge.Judge`, return `Calibrated()` honestly, wire into
   `Pipeline.Judge` and the provider setting.
 - **New question set version**: copy the set, bump the version constant, adjust consumers that
@@ -498,4 +566,4 @@ left for the user to delete.
 - **Later** (PLAN.md §8): macOS/Windows CI, OAuth device flow instead of PATs, GitLab accounts for
   gitlab.com/third instances via the UI (supported by the code; needs tokens), low-risk writes
   (reactions/labels) as new write-mode enum values with their own allowlists, optional cloud LLM
-  behind `llm.Generator`.
+  behind `llm.Generator`, bundling a pi runtime, a Markdown renderer for agent replies.

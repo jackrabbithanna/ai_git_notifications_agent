@@ -60,6 +60,7 @@ func main() {
 			application.NewService(&services.ProfilesService{App: core}),
 			application.NewService(&services.ProseService{App: core}),
 			application.NewService(&services.EvalService{App: core}),
+			application.NewService(&services.AgentService{App: core}),
 			application.NewService(notifier),
 		},
 		Assets: application.AssetOptions{
@@ -81,6 +82,13 @@ func main() {
 	setupTray(wails, window, core)
 
 	core.StartScheduler(syncInterval)
+	if as, err := core.Pipe.AgentSettings(context.Background()); err == nil && as.Enabled && as.AutoStart {
+		go func() {
+			if err := core.StartAgent(context.Background()); err != nil {
+				core.Logger.Warn("agent autostart", "err", err)
+			}
+		}()
+	}
 	// Warm the inbox shortly after launch without blocking the window.
 	go func() {
 		time.Sleep(2 * time.Second)

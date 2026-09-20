@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { DiagnosticsService, JudgeService } from "../../bindings/gitinbox/internal/services";
-import type { Environment, JudgeStatus, MCPServerInfo } from "../../bindings/gitinbox/internal/services";
+import { AgentService, DiagnosticsService, JudgeService } from "../../bindings/gitinbox/internal/services";
+import type { AgentStatus, Environment, JudgeStatus, MCPServerInfo } from "../../bindings/gitinbox/internal/services";
 import type { Stats, ToolInfo } from "../../bindings/gitinbox/internal/ghmcp";
 import type { Account, UsageRow } from "../../bindings/gitinbox/internal/store";
 import { fmtDateTime } from "../lib/format";
@@ -15,6 +15,7 @@ export default function Diagnostics({ accounts: allAccounts }: { accounts: Accou
   const [stats, setStats] = useState<Record<string, Stats | undefined>>({});
   const [selected, setSelected] = useState<number>(accounts[0]?.id ?? 0);
   const [judge, setJudge] = useState<JudgeStatus | null>(null);
+  const [agent, setAgent] = useState<AgentStatus | null>(null);
   const [usage, setUsage] = useState<UsageRow[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -23,6 +24,7 @@ export default function Diagnostics({ accounts: allAccounts }: { accounts: Accou
     DiagnosticsService.MCPServerInfo().then(setMcp).catch((e) => setError(errMsg(e)));
     DiagnosticsService.Environment().then(setEnv).catch((e) => setError(errMsg(e)));
     JudgeService.Status().then(setJudge).catch((e) => setError(errMsg(e)));
+    AgentService.Status().then(setAgent).catch((e) => setError(errMsg(e)));
     DiagnosticsService.Usage()
       .then((u) => setUsage(u ?? []))
       .catch((e) => setError(errMsg(e)));
@@ -142,6 +144,39 @@ export default function Diagnostics({ accounts: allAccounts }: { accounts: Accou
             </table>
           </>
         )}
+      </Card>
+
+      <Card title="Agent (pi sidecar)">
+        {!agent && <p className="text-xs text-neutral-500">Loading…</p>}
+        {agent && (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+            <dt className="text-neutral-500">State</dt>
+            <dd>
+              {agent.disabled ? <Chip tone="amber">disabled</Chip> : agent.status.running ? <Chip tone="green">{agent.status.busy ? "working" : "running"}</Chip> : <Chip tone="neutral">stopped</Chip>}
+              {agent.status.error && <span className="ml-2 text-amber-700 dark:text-amber-300">{agent.status.error}</span>}
+            </dd>
+            <dt className="text-neutral-500">pi</dt>
+            <dd className="break-all">
+              {agent.status.path || "not found"} {agent.status.source && `(${agent.status.source})`} {agent.status.version && `v${agent.status.version}`}
+            </dd>
+            <dt className="text-neutral-500">Model</dt>
+            <dd>{agent.status.model ? `${agent.status.provider || "ollama"}/${agent.status.model}` : "none configured"}</dd>
+            <dt className="text-neutral-500">Agent dir</dt>
+            <dd className="break-all">{agent.status.agentDir}</dd>
+            <dt className="text-neutral-500">Local API</dt>
+            <dd>{agent.status.apiUrl || "not started"} (bearer token, loopback only)</dd>
+            <dt className="text-neutral-500">Transcript</dt>
+            <dd>{agent.status.messages} entries</dd>
+          </dl>
+        )}
+        <div className="mt-2 flex gap-1">
+          <Button onClick={() => AgentService.Start().then(() => AgentService.Status().then(setAgent)).catch((e) => setError(errMsg(e)))} disabled={!!agent?.disabled}>
+            Start
+          </Button>
+          <Button onClick={() => AgentService.Stop().then(() => AgentService.Status().then(setAgent)).catch((e) => setError(errMsg(e)))}>
+            Stop
+          </Button>
+        </div>
       </Card>
 
       <Card title="Triage judge">

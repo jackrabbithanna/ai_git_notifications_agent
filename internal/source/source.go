@@ -153,3 +153,25 @@ func AppendUnique(s []string, v string) []string {
 	}
 	return append(s, v)
 }
+
+// Comment is one discussion entry on an issue / pull request / merge request,
+// as listed for agent deep-dives (oldest first).
+type Comment struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"` // comment | review | review_comment | note
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+	HTMLURL   string    `json:"htmlUrl,omitempty"`
+	Path      string    `json:"path,omitempty"`  // review comments / diff notes: the file
+	State     string    `json:"state,omitempty"` // reviews: approved | changes_requested | commented
+}
+
+// Discusser is implemented by sources that can list an item's discussion.
+// Implementations return at most limit entries, keeping the most recent ones.
+type Discusser interface {
+	Comments(ctx context.Context, repo string, number int, subjectType string, limit int) ([]Comment, error)
+}
+
+// MaxCommentBody caps one comment body in Discusser results.
+const MaxCommentBody = 4000
